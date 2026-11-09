@@ -23,8 +23,8 @@ from sqlalchemy import desc
 
 from app.db import (
     init_db, get_db, Incident, DiskHistory, SmartAttrHistory,
-    DockerHealthHistory, VmHealthHistory, LogUsageHistory, get_all_settings, set_setting,
-    seed_settings_from_env,
+    DockerHealthHistory, VmHealthHistory, LogUsageHistory, DockerLogUsageHistory,
+    get_all_settings, set_setting, seed_settings_from_env,
 )
 from app import rules
 from app import telegram
@@ -200,6 +200,27 @@ def ingest_log_usage(payload: dict[str, Any], db: Session = Depends(get_db), _=D
     found = []
     if used_pct is not None:
         for inc in rules.rule_log_usage_high(used_pct):
+            _save_incident(db, inc, raw=payload)
+            found.append(inc)
+    return {"incidents_found": len(found), "incidents": found}
+
+
+@app.post("/ingest/docker_log_usage")
+def ingest_docker_log_usage(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
+    """payload = {"used_pct": 8, "used_bytes": ..., "max_bytes": ..., "container_count": 25}
+    - zajetosc logow kontenerow Docker wzgledem limitu z polityki rotacji."""
+    used_pct = payload.get("used_pct")
+    container_count = payload.get("container_count") or 0
+    db.add(DockerLogUsageHistory(
+        used_pct=used_pct,
+        used_bytes=payload.get("used_bytes"),
+        max_bytes=payload.get("max_bytes"),
+        container_count=container_count,
+    ))
+    db.commit()
+    found = []
+    if used_pct is not None:
+        for inc in rules.rule_docker_log_usage_high(used_pct, container_count):
             _save_incident(db, inc, raw=payload)
             found.append(inc)
     return {"incidents_found": len(found), "incidents": found}
@@ -392,6 +413,9 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     latest_log_usage = db.query(LogUsageHistory).order_by(desc(LogUsageHistory.recorded_at)).first()
     log_usage_pct = latest_log_usage.used_pct if latest_log_usage else None
     log_usage_color = "#B00020" if (log_usage_pct or 0) >= 95 else ("#F9A825" if (log_usage_pct or 0) >= 80 else "#eee")
+    latest_docker_log_usage = db.query(DockerLogUsageHistory).order_by(desc(DockerLogUsageHistory.recorded_at)).first()
+    docker_log_usage_pct = latest_docker_log_usage.used_pct if latest_docker_log_usage else None
+    docker_log_usage_color = "#B00020" if (docker_log_usage_pct or 0) >= 95 else ("#F9A825" if (docker_log_usage_pct or 0) >= 80 else "#eee")
     rows_html = ""
     cards_html = ""
     for r in rows:
@@ -459,6 +483,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     <div class="stat"><div class="num">{new_count}</div><div class="label">Nowe incydenty</div></div>
     <div class="stat"><div class="num">{len(rows)}</div><div class="label">Ostatnie 200</div></div>
     <div class="stat"><div class="num" style="color:{log_usage_color};">{log_usage_pct if log_usage_pct is not None else '?'}%</div><div class="label">Zajętość /var/log</div></div>
+    <div class="stat"><div class="num" style="color:{docker_log_usage_color};">{docker_log_usage_pct if docker_log_usage_pct is not None else '?'}%</div><div class="label">Zajętość logów Docker</div></div>
   </div>
   <div class="desktop-table">
     <table>

@@ -541,6 +541,23 @@ def log_usage_poll_loop():
         time.sleep(LOG_USAGE_POLL_SECONDS)
 
 
+def docker_log_usage_poll_loop():
+    """Petla w osobnym watku: co LOG_USAGE_POLL_SECONDS sprawdza zajetosc
+    logow kontenerow Docker (*-json.log) wzgledem limitu z polityki
+    rotacji - przez ten sam dyspozytor/klucz ops co log_usage_poll_loop."""
+    log(f"Docker log usage poller: start, poll co {LOG_USAGE_POLL_SECONDS}s")
+    while True:
+        try:
+            raw = run_ops_dispatch("docker_log_usage")
+            if raw:
+                data = json.loads(raw.strip())
+                post_backend("/ingest/docker_log_usage", data)
+                log(f"Docker log usage poller: cykl OK, logi Docker zajete {data.get('used_pct')}%")
+        except Exception as e:  # noqa: BLE001
+            log(f"Docker log usage poller BLAD: {e!r}")
+        time.sleep(LOG_USAGE_POLL_SECONDS)
+
+
 def settings_refresh_loop():
     """Odswieza host/klucz unRAID z panelu co SETTINGS_REFRESH_SECONDS -
     zmiana w panelu dziala bez przebudowy kolektora (max. opoznienie =
@@ -581,6 +598,7 @@ def main():
         log("VM polling wylaczony (USC_VM_ENABLED=0)")
     if LOG_USAGE_ENABLED:
         threading.Thread(target=log_usage_poll_loop, daemon=True).start()
+        threading.Thread(target=docker_log_usage_poll_loop, daemon=True).start()
     else:
         log("Log usage polling wylaczony (USC_LOG_USAGE_ENABLED=0)")
     while True:

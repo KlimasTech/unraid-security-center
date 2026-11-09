@@ -24,6 +24,9 @@ case "$SSH_ORIGINAL_COMMAND" in
   log_usage)
     exec /bin/bash "$DIR/usc_log_usage_dump.sh"
     ;;
+  docker_log_usage)
+    exec /bin/bash "$DIR/usc_docker_log_usage_dump.sh"
+    ;;
   unpair)
     # Rozlaczenie z panelu USC: usuwa WSZYSTKIE 3 wpisy USC z
     # authorized_keys (oznaczone komentarzem "# USC-managed" przy

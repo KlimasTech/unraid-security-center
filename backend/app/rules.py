@@ -418,6 +418,28 @@ def rule_log_usage_high(used_pct: int) -> list[dict]:
     return out
 
 
+def rule_docker_log_usage_high(used_pct: int, container_count: int = 0) -> list[dict]:
+    """Zajetosc logow Docker (*-json.log) wzgledem teoretycznego limitu z
+    polityki rotacji (docker.cfg: DOCKER_LOG_SIZE x DOCKER_LOG_FILES x
+    liczba kontenerow) -> WARNING od 80%, CRITICAL od 95%."""
+    out = []
+    if used_pct >= 95:
+        severity = "CRITICAL"
+    elif used_pct >= 80:
+        severity = "WARNING"
+    else:
+        return out
+    out.append({
+        "severity": severity,
+        "category": "log_usage",
+        "source": "docker",
+        "rule_id": "docker_log_usage_high",
+        "title": f"Logi kontenerow Docker zajete w {used_pct}% limitu rotacji",
+        "detail": f"{container_count} kontenerow, limit z docker.cfg (DOCKER_LOG_SIZE x DOCKER_LOG_FILES) prawie wyczerpany.",
+    })
+    return out
+
+
 def rule_webgui_login(log_line: str) -> list[dict]:
     """Logowanie do WebGUI unRAID (zrodlo: 'webgui:' w syslogu) -> widoczne
     info w panelu, zamiast szumu z laczen SSH kolektora. Oba warianty (udane

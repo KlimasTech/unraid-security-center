@@ -122,6 +122,21 @@ class LogUsageHistory(Base):
     total_bytes = Column(Integer, nullable=True)
 
 
+class DockerLogUsageHistory(Base):
+    """Zajetosc logow kontenerow Docker (*-json.log) wzgledem teoretycznego
+    limitu z polityki rotacji docker.cfg (DOCKER_LOG_SIZE x DOCKER_LOG_FILES
+    x liczba kontenerow) - unRAID nie udostepnia gotowej wartosci."""
+
+    __tablename__ = "docker_log_usage_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recorded_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    used_pct = Column(Integer, nullable=True)
+    used_bytes = Column(Integer, nullable=True)
+    max_bytes = Column(Integer, nullable=True)
+    container_count = Column(Integer, nullable=True)
+
+
 class Setting(Base):
     """Ustawienia konfigurowalne z panelu (nie z .env) - np. host unRAID,
     klucz API, token/chat Telegram. Prostzy key-value store."""
