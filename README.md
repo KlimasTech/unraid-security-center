@@ -26,7 +26,8 @@ Architektura ma dwie połówki:
 git clone https://github.com/KlimasTech/unraid-security-center.git
 cd unraid-security-center
 cp .env.example .env
-# wypelnij .env (patrz docs/INSTALL.md), potem:
+scripts/usc_pair.sh <IP_UNRAID>   # jedna komenda: klucze SSH + klucz API unRAID
+# wypelnij reszte .env (sekrety panelu, patrz docs/INSTALL.md), potem:
 docker compose up -d --build
 ```
 
