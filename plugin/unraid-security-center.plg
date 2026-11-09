@@ -2,17 +2,28 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name      "unraid-security-center">
 <!ENTITY displayName "unRaid Security Center Plugin">
-<!ENTITY author    "Pawel / Heniek">
-<!ENTITY version   "2026.11.12">
+<!ENTITY author    "KlimasTech">
+<!ENTITY version   "2026.11.14">
 <!ENTITY pkgname   "&name;-&version;.txz">
 <!ENTITY pkgdir    "/boot/config/plugins/&name;">
 <!ENTITY pkgpath   "&pkgdir;/&pkgname;">
-<!ENTITY packageMD5 "76e57d34c5e41690b3ed2cadc05fd4f8">
+<!ENTITY packageMD5 "0cba47e4b98478ac46601136421bf930">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings">
 
 <CHANGES>
+###2026.11.14
+- Dodano logo (grafika unRAID Security Center) do README.md - widoczne na
+  liscie pluginow unRAID.
+###2026.11.13
+- Autor zmieniony na KlimasTech.
+- Skrocony/zaktualizowany opis w README.md (widoczny na liscie pluginow).
+- Naprawiono dedupikacje syslog-previous i logow VM w kolektorze: stan byl
+  trzymany tylko w pamieci procesu, wiec kazdy restart kontenera kolektora
+  resetowal go i powodowal ponowne zglaszanie tych samych, juz znanych
+  zdarzen jako nowych incydentow. Nie dotyczy samego pluginu (zmiana w
+  kolektorze), ale wymagala tej wersji do spojnego wydania.
 ###2026.11.12
 - Dodano akcje "unpair" do dyspozytora (usc_dispatch.sh): panel USC (przycisk
   "Rozlacz" w /wizard) moze teraz samodzielnie usunac wszystkie 3 wpisy USC

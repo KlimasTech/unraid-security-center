@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import FastAPI, Depends, Header, HTTPException, status, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -30,6 +31,10 @@ from app import telegram
 from app import unraid_pair
 
 app = FastAPI(title="unRaid Security Center (USC)", version="0.2.0")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+_LOGO_HEAD = '<link rel="icon" type="image/png" href="/static/favicon.png">'
+_LOGO_H1 = '<img src="/static/logo-64.png" alt="USC" style="height:28px;width:28px;border-radius:50%;vertical-align:-5px;margin-right:6px;"> unRaid Security Center (USC)'
 
 ADMIN_USER = os.environ.get("USC_ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("USC_ADMIN_PASSWORD", "")
@@ -390,6 +395,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
 <html lang="pl"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
 <title>unRaid Security Center</title>
 <meta http-equiv="refresh" content="30">
 <style>
@@ -418,7 +424,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
   }}
 </style></head>
 <body>
-  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <h1>{_LOGO_H1}</h1>
   <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   <div class="sub">Odświeża się co 30s</div>
   <div class="stats">
@@ -455,6 +461,7 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
 <html lang="pl"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
 <title>USC - Ustawienia</title>
 <style>
 {_PAGE_STYLE}
@@ -467,7 +474,7 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
   button {{ margin-top:20px; padding:10px 20px; border-radius:6px; border:none; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
 </style></head>
 <body>
-  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <h1>{_LOGO_H1}</h1>
   <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   {banner}
   <form method="POST" action="/settings">
@@ -548,6 +555,7 @@ def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
 <html lang="pl"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
 <title>USC - Połącz z unRAID</title>
 <style>
 {_PAGE_STYLE}
@@ -563,7 +571,7 @@ def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
   .banner.ok {{ background:#1b3a1b; color:#9fdc9f; }}
 </style></head>
 <body>
-  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <h1>{_LOGO_H1}</h1>
   <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   {body}
 </body></html>"""
@@ -607,6 +615,7 @@ def wizard_connect(
 <html lang="pl"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
 <title>USC - Wynik parowania</title>
 <style>
 {_PAGE_STYLE}
@@ -619,7 +628,7 @@ def wizard_connect(
   .wiz-detail {{ font-size:12px; color:#999; margin-top:2px; }}
 </style></head>
 <body>
-  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <h1>{_LOGO_H1}</h1>
   <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   {banner}
   {steps_html}
@@ -647,6 +656,7 @@ def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
 <html lang="pl"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
 <title>USC - Rozłączono</title>
 <style>
 {_PAGE_STYLE}
@@ -658,7 +668,7 @@ def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
   .wiz-detail {{ font-size:12px; color:#999; margin-top:2px; }}
 </style></head>
 <body>
-  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <h1>{_LOGO_H1}</h1>
   <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   <div class="banner ok">Rozłączono od {host or 'unRAID'}. Posprzątano wpisy w authorized_keys, klucz API i lokalne pliki kluczy.</div>
   {steps_html}

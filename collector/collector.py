@@ -380,6 +380,24 @@ def docker_health_poll_loop():
 
 
 _last_syslog_previous_hash: str | None = None
+_SYSLOG_PREVIOUS_STATE_FILE = "/app/keys/.state_syslog_previous_hash"
+
+
+def _load_syslog_previous_hash() -> str | None:
+    try:
+        with open(_SYSLOG_PREVIOUS_STATE_FILE) as f:
+            return f.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _save_syslog_previous_hash(h: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(_SYSLOG_PREVIOUS_STATE_FILE), exist_ok=True)
+        with open(_SYSLOG_PREVIOUS_STATE_FILE, "w") as f:
+            f.write(h)
+    except OSError as e:
+        log(f"BLAD zapisu stanu dedup syslog-previous: {e!r}")
 
 
 def syslog_previous_poll_loop():
@@ -387,10 +405,15 @@ def syslog_previous_poll_loop():
     /boot/logs/syslog-previous (tworzony przy kazdym restarcie unRAID) -
     wysyla do backendu TYLKO gdy zawartosc sie zmienila (czyli po nowym
     restarcie), zeby nie generowac powtarzajacych sie incydentow za ten
-    sam, juz przeanalizowany log."""
+    sam, juz przeanalizowany log. Hash zapisywany NA DYSKU (wolumen
+    usc-keys-data) - bez tego kazdy restart kontenera kolektora resetowalby
+    pamiec i powodowal ponowne zglaszanie tego samego, juz znanego zdarzenia
+    jako nowego incydentu."""
     global _last_syslog_previous_hash
     import hashlib
-    log(f"Syslog-previous poller: start, poll co {SYSLOG_PREVIOUS_POLL_SECONDS}s")
+    _last_syslog_previous_hash = _load_syslog_previous_hash()
+    log(f"Syslog-previous poller: start, poll co {SYSLOG_PREVIOUS_POLL_SECONDS}s"
+        f" (ostatni znany hash: {'brak' if not _last_syslog_previous_hash else _last_syslog_previous_hash[:8]})")
     while True:
         try:
             raw = run_ops_dispatch("syslog_previous")
@@ -398,6 +421,7 @@ def syslog_previous_poll_loop():
                 h = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
                 if h != _last_syslog_previous_hash:
                     _last_syslog_previous_hash = h
+                    _save_syslog_previous_hash(h)
                     lines = raw.splitlines()
                     post_backend("/ingest/syslog", {"lines": lines})
                     log(f"Syslog-previous poller: NOWA zawartosc po restarcie, {len(lines)} linii wyslanych")
@@ -407,14 +431,34 @@ def syslog_previous_poll_loop():
 
 
 _vm_log_last_line: dict[str, str] = {}
+_VM_LOG_STATE_FILE = "/app/keys/.state_vm_log_last_line.json"
+
+
+def _load_vm_log_last_line() -> dict[str, str]:
+    try:
+        with open(_VM_LOG_STATE_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_vm_log_last_line(state: dict[str, str]) -> None:
+    try:
+        os.makedirs(os.path.dirname(_VM_LOG_STATE_FILE), exist_ok=True)
+        with open(_VM_LOG_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except OSError as e:
+        log(f"BLAD zapisu stanu dedup VM log: {e!r}")
 
 
 def vm_poll_loop():
     """Petla w osobnym watku: co VM_POLL_SECONDS pobiera stan VM (virsh)
     oraz NOWE linie logow qemu per VM (dedupkikacja po ostatniej znanej
     linii - zeby nie alarmowac w kolko za te sama, juz widziana, historie
-    logu przy kazdym tailu ostatnich 100 linii)."""
+    logu przy kazdym tailu ostatnich 100 linii). Stan dedup zapisywany NA
+    DYSKU (wolumen usc-keys-data) - przetrwa restart kontenera kolektora."""
     global _vm_log_last_line
+    _vm_log_last_line = _load_vm_log_last_line()
     log(f"VM poller: start, poll co {VM_POLL_SECONDS}s")
     while True:
         try:
@@ -452,8 +496,8 @@ def vm_poll_loop():
                         new_pairs.append([vm_name, line])
                     if lines:
                         _vm_log_last_line[vm_name] = lines[-1]
-
                 if new_pairs:
+                    _save_vm_log_last_line(_vm_log_last_line)
                     post_backend("/ingest/vm_log", {"lines": new_pairs})
                 log(f"VM poller: cykl OK, {len(per_vm_lines)} VM, {len(new_pairs)} nowych linii logu")
         except Exception as e:  # noqa: BLE001
