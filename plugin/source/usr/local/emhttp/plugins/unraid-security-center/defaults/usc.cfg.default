@@ -1,0 +1,7 @@
+#  unRaid Security Center Plugin - domyslna konfiguracja (seedowana tylko
+#  jesli /boot/config/plugins/unraid-security-center/usc.cfg jeszcze nie
+#  istnieje - nigdy nie nadpisuje recznych zmian uzytkownika).
+disk_space_warning_pct="90"
+smart_poll_minutes="10"
+docker_health_poll_minutes="5"
+syslog_previous_enabled="1"

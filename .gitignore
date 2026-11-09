@@ -1,0 +1,6 @@
+.env
+collector/keys/*
+!collector/keys/.gitkeep
+__pycache__/
+*.pyc
+.DS_Store

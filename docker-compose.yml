@@ -1,0 +1,58 @@
+version: "3.8"
+
+services:
+  usc-postgres:
+    image: postgres:16-alpine
+    container_name: usc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: usc
+      POSTGRES_PASSWORD: "${USC_DB_PASSWORD:?ustaw USC_DB_PASSWORD w .env}"
+      POSTGRES_DB: usc
+    volumes:
+      - usc-postgres-data:/var/lib/postgresql/data
+    networks:
+      - usc-net
+
+  usc-backend:
+    build: ./backend
+    image: usc-backend:latest
+    container_name: usc-backend
+    restart: unless-stopped
+    environment:
+      USC_DATABASE_URL: "postgresql://usc:${USC_DB_PASSWORD}@usc-postgres:5432/usc"
+      USC_TELEGRAM_BOT_TOKEN: "${USC_TELEGRAM_BOT_TOKEN}"
+      USC_TELEGRAM_CHAT_ID: "${USC_TELEGRAM_CHAT_ID}"
+    depends_on:
+      - usc-postgres
+    ports:
+      - "${USC_WEB_PORT:-8420}:8000"
+    networks:
+      - usc-net
+
+  usc-collector:
+    build: ./collector
+    image: usc-collector:latest
+    container_name: usc-collector
+    restart: unless-stopped
+    environment:
+      USC_UNRAID_HOST: "${USC_UNRAID_HOST:?ustaw USC_UNRAID_HOST w .env (IP serwera unRAID)}"
+      USC_UNRAID_URL: "http://${USC_UNRAID_HOST}/graphql"
+      USC_UNRAID_API_KEY: "${USC_UNRAID_API_KEY:?ustaw USC_UNRAID_API_KEY w .env}"
+      USC_BACKEND_URL: "http://usc-backend:8000"
+      USC_POLL_SECONDS: "${USC_POLL_SECONDS:-60}"
+      USC_SMART_POLL_SECONDS: "${USC_SMART_POLL_SECONDS:-600}"
+      USC_DOCKER_HEALTH_POLL_SECONDS: "${USC_DOCKER_HEALTH_POLL_SECONDS:-300}"
+      USC_SYSLOG_PREVIOUS_POLL_SECONDS: "${USC_SYSLOG_PREVIOUS_POLL_SECONDS:-900}"
+      USC_VM_POLL_SECONDS: "${USC_VM_POLL_SECONDS:-180}"
+    depends_on:
+      - usc-backend
+    networks:
+      - usc-net
+
+networks:
+  usc-net:
+    driver: bridge
+
+volumes:
+  usc-postgres-data:

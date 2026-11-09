@@ -1,0 +1,48 @@
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name      "unraid-security-center">
+<!ENTITY displayName "unRaid Security Center Plugin">
+<!ENTITY author    "Pawel / Heniek">
+<!ENTITY version   "2026.11.11">
+<!ENTITY pkgname   "&name;-&version;.txz">
+<!ENTITY pkgdir    "/boot/config/plugins/&name;">
+<!ENTITY pkgpath   "&pkgdir;/&pkgname;">
+<!ENTITY packageMD5 "0bede99ce693dcb386959104e784733a">
+]>
+
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings">
+
+<CHANGES>
+###2026.11.11
+- Dodano skrypty: usc_vm_health_dump.sh (stan domen libvirt/QEMU przez virsh),
+  usc_vm_log_tail.sh (ostatnie 100 linii logu qemu per VM).
+- Rozszerzono dyspozytor (usc_dispatch.sh) o akcje vm_health i vm_log_tail.
+###2026.11.10
+- Dodano skrypty: usc_docker_health_dump.sh (RestartCount/OOMKilled/Health),
+  usc_syslog_previous_dump.sh (ostatnie ~300KB syslog-previous po restarcie)
+  oraz usc_dispatch.sh (whitelist-dyspozytor dla drugiego ograniczonego
+  klucza SSH - jeden klucz, dwie dozwolone akcje odczytu).
+- Dodano domyslna konfiguracje usc.cfg (seedowana jesli jeszcze nie istnieje
+  na /boot/config/plugins, nigdy nie nadpisuje recznych zmian).
+###2026.11.09a
+- Pierwsza wersja pluginu: zrzut telemetrii SMART (ATA plus NVMe) dla kolektora USC.
+- Zastapienie wolnostojacego skryptu na flashu wlasciwym pakietem pluginu.
+</CHANGES>
+
+<FILE Name="&pkgpath;">
+<URL>file://&pkgpath;</URL>
+<MD5>&packageMD5;</MD5>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+mkdir -p /usr/local/emhttp/plugins/&name;
+tar xJf &pkgpath; -C /
+chmod +x /usr/local/emhttp/plugins/&name;/scripts/*.sh
+mkdir -p /boot/config/plugins/&name;
+[ -f /boot/config/plugins/&name;/usc.cfg ] || cp /usr/local/emhttp/plugins/&name;/defaults/usc.cfg.default /boot/config/plugins/&name;/usc.cfg
+echo "&displayName; zainstalowany/zaktualizowany (wersja &version;)."
+</INLINE>
+</FILE>
+
+</PLUGIN>
