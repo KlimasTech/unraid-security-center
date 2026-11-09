@@ -98,10 +98,28 @@ Zapisz zwrócony klucz — potrzebny w `.env` jako `USC_UNRAID_API_KEY`.
 
 ```bash
 cp .env.example .env
-# wypelnij: USC_UNRAID_HOST, USC_UNRAID_API_KEY, USC_DB_PASSWORD,
-#           (opcjonalnie) USC_TELEGRAM_BOT_TOKEN, USC_TELEGRAM_CHAT_ID
+```
+
+Wypełnij `.env`:
+- **Wygeneruj losowe sekrety** (nigdy nie wpisuj własnych prostych wartości):
+  ```bash
+  echo "USC_DB_PASSWORD=$(openssl rand -hex 16)"
+  echo "USC_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
+  echo "USC_INTERNAL_TOKEN=$(openssl rand -hex 24)"
+  ```
+  Wklej wyniki do `.env` (`USC_ADMIN_USER` zostaw jako `admin` albo zmień).
+- `USC_UNRAID_HOST`, `USC_UNRAID_API_KEY` — to tylko **jednorazowy seed**
+  przy pierwszym starcie; po instalacji edytujesz je w panelu `/settings`.
+- `USC_TELEGRAM_BOT_TOKEN`/`USC_TELEGRAM_CHAT_ID` — opcjonalnie, jak wyżej.
+
+```bash
 docker compose up -d --build
 ```
+
+Zaloguj się na `http://<IP_HOSTA_DOCKER>:8420/` loginem/hasłem z
+`USC_ADMIN_USER`/`USC_ADMIN_PASSWORD`. Panel `/settings` pozwala edytować
+host/klucz unRAID i dane Telegrama bez przebudowy kontenerów (kolektor
+odczytuje je z backendu co ~60s).
 
 ## 7. Weryfikacja
 

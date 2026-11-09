@@ -1,10 +1,16 @@
 """USC collector - odpytuje GraphQL API unRAID i wysyla znormalizowane dane
-do backendu USC (/ingest/*). Dziala jako petla z interwalem POLL_SECONDS.
+do backendu USC (/ingest/*). Dziala jako petla z interwalem POLL_SECONDS,
+plus 5 niezaleznych watkow SSH (syslog tail, SMART, docker health,
+syslog-previous, VM).
 
-Druga, niezalezna petla (watek) tailuje syslog unRAID przez SSH (klucz
-ograniczony komenda="tail -n0 -F /var/log/syslog" po stronie serwera - nawet
-w razie wycieku klucza nie da sie nim zrobic nic innego) i wysyla linie do
-/ingest/syslog partiami.
+Host/klucz unRAID NIE sa brane ze zmiennych env tego kontenera - sa
+ustawiane w panelu USC (zapisane w bazie) i pobierane stad okresowo przez
+GET /internal/settings (chronione wspoldzielonym tokenem X-USC-Token), zeby
+zmiana w panelu dzialala bez przebudowy/restartu kolektora.
+
+Kazde polaczenie SSH idzie przez jeden z 3 kluczy ograniczonych server-side
+(command= w authorized_keys na unRAID) - nawet w razie wycieku pliku klucza
+nie da sie nim zrobic nic poza wymuszona akcja odczytu.
 """
 import os
 import sys
@@ -15,12 +21,11 @@ import subprocess
 import urllib.request
 import urllib.error
 
-UNRAID_URL = os.environ.get("USC_UNRAID_URL", "")
-UNRAID_API_KEY = os.environ.get("USC_UNRAID_API_KEY", "")
 BACKEND_URL = os.environ.get("USC_BACKEND_URL", "http://usc-backend:8000")
+INTERNAL_TOKEN = os.environ.get("USC_INTERNAL_TOKEN", "")
 POLL_SECONDS = int(os.environ.get("USC_POLL_SECONDS", "60"))
+SETTINGS_REFRESH_SECONDS = int(os.environ.get("USC_SETTINGS_REFRESH_SECONDS", "60"))
 
-UNRAID_HOST = os.environ.get("USC_UNRAID_HOST", "")
 SSH_KEY_PATH = os.environ.get("USC_SSH_KEY_PATH", "/app/keys/usc_collector_key")
 SYSLOG_ENABLED = os.environ.get("USC_SYSLOG_ENABLED", "1") == "1"
 SYSLOG_BATCH_SECONDS = int(os.environ.get("USC_SYSLOG_BATCH_SECONDS", "10"))
@@ -57,16 +62,45 @@ QUERY = """
 }
 """
 
+# Stan ustawien pobieranych z panelu (odswiezany okresowo) - czytany przez
+# wszystkie watki. Prosty dict + GIL wystarcza dla naszych odczytow/zapisow
+# pojedynczych stringow, nie potrzeba locka.
+_settings = {"unraid_host": None, "unraid_api_key": None}
+
 
 def log(msg: str):
     print(f"[usc-collector] {msg}", flush=True)
 
 
+def backend_headers() -> dict:
+    return {"Content-Type": "application/json", "X-USC-Token": INTERNAL_TOKEN}
+
+
+def refresh_settings() -> bool:
+    """Pobiera unraid_host/unraid_api_key z panelu (baza przez backend).
+    Zwraca True gdy mamy kompletne ustawienia do pracy."""
+    req = urllib.request.Request(
+        f"{BACKEND_URL}/internal/settings", headers=backend_headers(), method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+            _settings["unraid_host"] = data.get("unraid_host")
+            _settings["unraid_api_key"] = data.get("unraid_api_key")
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        log(f"BLAD odswiezania ustawien z backendu: {e}")
+    return bool(_settings["unraid_host"] and _settings["unraid_api_key"])
+
+
 def graphql_query() -> dict | None:
+    host = _settings["unraid_host"]
+    api_key = _settings["unraid_api_key"]
+    if not host or not api_key:
+        return None
     body = json.dumps({"query": QUERY}).encode()
     req = urllib.request.Request(
-        UNRAID_URL, data=body,
-        headers={"Content-Type": "application/json", "x-api-key": UNRAID_API_KEY},
+        f"http://{host}/graphql", data=body,
+        headers={"Content-Type": "application/json", "x-api-key": api_key},
         method="POST",
     )
     try:
@@ -81,7 +115,7 @@ def post_backend(path: str, payload: dict) -> None:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{BACKEND_URL}{path}", data=body,
-        headers={"Content-Type": "application/json"}, method="POST",
+        headers=backend_headers(), method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -96,7 +130,7 @@ def post_backend(path: str, payload: dict) -> None:
 def run_once():
     data = graphql_query()
     if not data or "data" not in data:
-        log(f"Brak danych z unRAID GraphQL (odpowiedz: {data})")
+        log(f"Brak danych z unRAID GraphQL (host={_settings['unraid_host']}, odpowiedz: {data})")
         return
     d = data["data"]
 
@@ -176,8 +210,12 @@ def syslog_tail_loop():
     batchuje linie co SYSLOG_BATCH_SECONDS i wysyla do backendu. Przy
     zerwaniu polaczenia reconnectuje po krotkiej przerwie.
     """
-    log(f"Syslog tailer: start, host={UNRAID_HOST}, klucz={SSH_KEY_PATH}")
+    log(f"Syslog tailer: start, klucz={SSH_KEY_PATH}")
     while True:
+        host = _settings["unraid_host"]
+        if not host:
+            time.sleep(10)
+            continue
         try:
             proc = subprocess.Popen(
                 [
@@ -186,7 +224,7 @@ def syslog_tail_loop():
                     "-o", "IdentitiesOnly=yes",
                     "-o", "ServerAliveInterval=30",
                     "-o", "ServerAliveCountMax=3",
-                    f"root@{UNRAID_HOST}",
+                    f"root@{host}",
                 ],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             )
@@ -216,6 +254,9 @@ def syslog_tail_loop():
 def fetch_smart_dump() -> dict | None:
     """Pobiera JSON SMART wszystkich dyskow przez ograniczony klucz SSH
     (server-side wymusza dokladnie jedna komende: usc_smart_dump.sh)."""
+    host = _settings["unraid_host"]
+    if not host:
+        return None
     try:
         result = subprocess.run(
             [
@@ -223,7 +264,7 @@ def fetch_smart_dump() -> dict | None:
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "IdentitiesOnly=yes",
                 "-o", "ConnectTimeout=15",
-                f"root@{UNRAID_HOST}",
+                f"root@{host}",
             ],
             capture_output=True, text=True, timeout=60,
         )
@@ -250,7 +291,6 @@ def parse_smart_dump(dump: dict) -> list[dict]:
         if not isinstance(info, dict):
             continue
         model = info.get("model_name") or info.get("model_family") or info.get("device", {}).get("type")
-        dtype = (info.get("device") or {}).get("type", "")
         entry = {"device": device, "model": model}
         if "nvme_smart_health_information_log" in info:
             h = info["nvme_smart_health_information_log"]
@@ -274,7 +314,7 @@ def smart_poll_loop():
     """Petla w osobnym watku: co SMART_POLL_SECONDS pobiera zrzut SMART
     wszystkich dyskow przez ograniczony klucz SSH i wysyla do backendu.
     """
-    log(f"SMART poller: start, host={UNRAID_HOST}, poll co {SMART_POLL_SECONDS}s")
+    log(f"SMART poller: start, poll co {SMART_POLL_SECONDS}s")
     while True:
         try:
             dump = fetch_smart_dump()
@@ -291,6 +331,9 @@ def run_ops_dispatch(action: str) -> str | None:
     """Wywoluje dyspozytor USC (usc_dispatch.sh) przez klucz 'ops' - klient
     wysyla `action` jako SSH command, serwer i tak zawsze wykonuje tylko
     dyspozytor (forced command), ktory sam sprawdza biala liste akcji."""
+    host = _settings["unraid_host"]
+    if not host:
+        return None
     try:
         result = subprocess.run(
             [
@@ -298,7 +341,7 @@ def run_ops_dispatch(action: str) -> str | None:
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "IdentitiesOnly=yes",
                 "-o", "ConnectTimeout=15",
-                f"root@{UNRAID_HOST}", action,
+                f"root@{host}", action,
             ],
             capture_output=True, text=True, timeout=60,
         )
@@ -404,8 +447,6 @@ def vm_poll_loop():
                         idx = len(lines) - 1 - lines[::-1].index(last_seen)
                         new_lines = lines[idx + 1:]
                     else:
-                        # pierwszy odczyt tej VM albo log zrotowany - nie
-                        # zalewamy starą historią, bierzemy tylko najnowsza linie
                         new_lines = lines[-1:] if lines else []
                     for line in new_lines:
                         new_pairs.append([vm_name, line])
@@ -420,37 +461,42 @@ def vm_poll_loop():
         time.sleep(VM_POLL_SECONDS)
 
 
+def settings_refresh_loop():
+    """Odswieza host/klucz unRAID z panelu co SETTINGS_REFRESH_SECONDS -
+    zmiana w panelu dziala bez przebudowy kolektora (max. opoznienie =
+    ten interwal)."""
+    while True:
+        ok = refresh_settings()
+        if not ok:
+            log("Czekam na skonfigurowanie host/klucz unRAID w panelu (/settings)...")
+        time.sleep(SETTINGS_REFRESH_SECONDS)
+
+
 def main():
-    if not UNRAID_API_KEY:
-        log("BRAK USC_UNRAID_API_KEY - kolektor nie moze sie uwierzytelnic. Koncze.")
+    if not INTERNAL_TOKEN:
+        log("BRAK USC_INTERNAL_TOKEN - kolektor nie moze sie uwierzytelnic do backendu. Koncze.")
         sys.exit(1)
-    if not UNRAID_HOST or not UNRAID_URL:
-        log("BRAK USC_UNRAID_HOST/USC_UNRAID_URL - ustaw je w .env. Koncze.")
-        sys.exit(1)
-    log(f"Start. Poll co {POLL_SECONDS}s, unRAID={UNRAID_URL}, backend={BACKEND_URL}")
+    log(f"Start. Poll co {POLL_SECONDS}s, backend={BACKEND_URL}")
+    refresh_settings()  # pierwsze pobranie synchronicznie, zanim ruszą watki
+    threading.Thread(target=settings_refresh_loop, daemon=True).start()
     if SYSLOG_ENABLED:
-        t = threading.Thread(target=syslog_tail_loop, daemon=True)
-        t.start()
+        threading.Thread(target=syslog_tail_loop, daemon=True).start()
     else:
         log("Syslog tailing wylaczony (USC_SYSLOG_ENABLED=0)")
     if SMART_ENABLED:
-        t2 = threading.Thread(target=smart_poll_loop, daemon=True)
-        t2.start()
+        threading.Thread(target=smart_poll_loop, daemon=True).start()
     else:
         log("SMART polling wylaczony (USC_SMART_ENABLED=0)")
     if DOCKER_HEALTH_ENABLED:
-        t3 = threading.Thread(target=docker_health_poll_loop, daemon=True)
-        t3.start()
+        threading.Thread(target=docker_health_poll_loop, daemon=True).start()
     else:
         log("Docker health polling wylaczony (USC_DOCKER_HEALTH_ENABLED=0)")
     if SYSLOG_PREVIOUS_ENABLED:
-        t4 = threading.Thread(target=syslog_previous_poll_loop, daemon=True)
-        t4.start()
+        threading.Thread(target=syslog_previous_poll_loop, daemon=True).start()
     else:
         log("Syslog-previous polling wylaczony (USC_SYSLOG_PREVIOUS_ENABLED=0)")
     if VM_ENABLED:
-        t5 = threading.Thread(target=vm_poll_loop, daemon=True)
-        t5.start()
+        threading.Thread(target=vm_poll_loop, daemon=True).start()
     else:
         log("VM polling wylaczony (USC_VM_ENABLED=0)")
     while True:

@@ -1,5 +1,25 @@
 # Rozwiązywanie problemów
 
+## Autoryzacja (401)
+
+**Dashboard/panel zwraca 401 mimo poprawnego hasła.**
+Sprawdź, czy `USC_ADMIN_USER`/`USC_ADMIN_PASSWORD` w `.env` nie mają
+końcowej spacji/nowej linii (łatwo wkleić przypadkiem). Zweryfikuj:
+`docker exec usc-backend printenv | grep ADMIN`.
+
+**`/ingest/*` zwraca 401 (kolektor nie wysyła danych).**
+`USC_INTERNAL_TOKEN` musi być **identyczny** w `.env` backendu i
+kolektora — to jedna zmienna współdzielona przez obie usługi w
+`docker-compose.yml`. Sprawdź logi kolektora: `BLAD wysylki do backendu` z
+kodem 401 oznacza niezgodność tokenu.
+
+**Panel `/settings` nie pokazuje zapisanych wartości / kolektor nie widzi
+zmiany z panelu.**
+Kolektor odświeża ustawienia co ~60s (`USC_SETTINGS_REFRESH_SECONDS`) —
+sprawdź `docker logs usc-collector | grep "Czekam na skonfigurowanie"`
+(oznacza że host/klucz unRAID wciąż są puste w bazie). Zweryfikuj wprost:
+`docker exec usc-postgres psql -U usc -d usc -c "SELECT * FROM settings;"`.
+
 ## SSH
 
 **Kolektor loguje `Connection refused` do backendu przy starcie.**

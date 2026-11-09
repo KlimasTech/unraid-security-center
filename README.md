@@ -52,16 +52,22 @@ Plugin na samym unRAID instaluje się osobno — pełna procedura w
 | Logi systemowe | `tail -F /var/log/syslog` na żywo + `syslog-previous` po restarcie (crash-persistent) | SSH, dwa niezależne strumienie |
 | Alerty | Telegram (plain text, bez Markdown — patrz ARCHITECTURE.md) | Bot API |
 
-## Konfiguracja (`.env`)
+## Konfiguracja
 
-| Zmienna | Wymagana | Opis |
+Dwa poziomy konfiguracji — **nie wszystko jest w `.env`**:
+
+| Zmienna `.env` | Wymagana | Kiedy używana |
 |---|---|---|
-| `USC_UNRAID_HOST` | tak | IP serwera unRAID |
-| `USC_UNRAID_API_KEY` | tak | klucz API unRAID, rola VIEWER |
-| `USC_DB_PASSWORD` | tak | hasło PostgreSQL backendu |
-| `USC_TELEGRAM_BOT_TOKEN` | nie | token bota z @BotFather — bez niego brak alertów |
-| `USC_TELEGRAM_CHAT_ID` | nie | chat_id odbiorcy alertów |
-| `USC_WEB_PORT` | nie (domyślnie 8420) | port dashboardu |
+| `USC_DB_PASSWORD` | tak, **losowa** | hasło PostgreSQL — wygeneruj `openssl rand -hex 16` |
+| `USC_ADMIN_USER` / `USC_ADMIN_PASSWORD` | tak, **losowe** | login do panelu (dashboard + `/settings`), HTTP Basic Auth |
+| `USC_INTERNAL_TOKEN` | tak, losowy | wspólny token backend↔collector, chroni `/ingest/*` (port backendu jest wystawiony na hosta) |
+| `USC_UNRAID_HOST` / `USC_UNRAID_API_KEY` | nie (seed) | **tylko pierwszy start** — potem edytuj w panelu `/settings` |
+| `USC_TELEGRAM_BOT_TOKEN` / `USC_TELEGRAM_CHAT_ID` | nie (seed) | jak wyżej — panel `/settings` |
+| `USC_WEB_PORT` | nie (domyślnie 8420) | port dashboardu — deploy-time, wymaga przebudowy kontenera |
+
+Host/klucz unRAID i dane Telegrama **żyją w bazie**, edytowalne z panelu bez
+restartu kontenerów — kolektor odpytuje backend o nie co ~60s
+(`GET /internal/settings`, chronione `USC_INTERNAL_TOKEN`).
 
 ## Rozwiązywanie problemów
 

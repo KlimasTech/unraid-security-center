@@ -105,6 +105,26 @@ prostu zwracała `False`, bez logowania) — realne alerty gubiły się bez
 text) + dodanie logowania każdej nieudanej wysyłki. Niezawodność dostawy
 > ładne formatowanie.
 
+## Autoryzacja i konfiguracja z panelu (nie z `.env`)
+
+Panel (dashboard + `/settings`) jest chroniony HTTP Basic Auth
+(`USC_ADMIN_USER`/`USC_ADMIN_PASSWORD`, losowe, z `.env`). Endpointy
+`/ingest/*` (kolektor→backend) są chronione **osobnym** współdzielonym
+tokenem (`USC_INTERNAL_TOKEN`, nagłówek `X-USC-Token`) — osobny mechanizm,
+bo port backendu jest wystawiony na hosta przez `docker-compose` (`-p
+8420:8000`), więc `/ingest/*` są technicznie osiągalne z sieci, nie tylko
+z wewnątrz docker-network; bez tego tokenu każdy, kto dotrze do portu,
+mógłby wstrzykiwać fałszywe incydenty.
+
+Host/klucz unRAID i dane Telegrama **nie żyją w zmiennych env kontenerów**
+— są w tabeli `settings` w PostgreSQL, edytowalne z panelu `/settings` bez
+przebudowy/restartu kontenerów. `.env` służy tylko do **jednorazowego
+seedu** przy pierwszym starcie (`USC_SEED_*` zmienne czytane przez
+backend, `seed_settings_from_env()` w `db.py` — nigdy nie nadpisuje już
+ustawionej wartości). Kolektor odpytuje `GET /internal/settings` (ten sam
+token wewnętrzny) co ~60s i odświeża swój lokalny stan w pamięci — zmiana
+w panelu działa z maks. tym opóźnieniem, bez redeployu.
+
 ## Deduplikacja — dlaczego jest krytyczna
 
 Dwa źródła wymagają jej wprost, inaczej zalewają incydentami przy KAŻDYM

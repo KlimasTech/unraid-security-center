@@ -109,6 +109,64 @@ class VmHealthHistory(Base):
     state = Column(String(32), nullable=True)
 
 
+class Setting(Base):
+    """Ustawienia konfigurowalne z panelu (nie z .env) - np. host unRAID,
+    klucz API, token/chat Telegram. Prostzy key-value store."""
+
+    __tablename__ = "settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+
+
+# Klucze ustawien zarzadzanych przez panel (nie przez zmienne env kontenerow)
+SETTING_KEYS = [
+    "unraid_host",
+    "unraid_api_key",
+    "telegram_bot_token",
+    "telegram_chat_id",
+]
+
+
+def get_setting(db, key: str, default: str | None = None) -> str | None:
+    row = db.query(Setting).filter(Setting.key == key).first()
+    return row.value if row else default
+
+
+def get_all_settings(db) -> dict[str, str | None]:
+    rows = db.query(Setting).filter(Setting.key.in_(SETTING_KEYS)).all()
+    values = {r.key: r.value for r in rows}
+    return {k: values.get(k) for k in SETTING_KEYS}
+
+
+def set_setting(db, key: str, value: str) -> None:
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value))
+    db.commit()
+
+
+def seed_settings_from_env(db) -> None:
+    """Jednorazowe seedowanie ustawien z env (migracja z poprzedniej wersji
+    opartej na .env) - TYLKO jesli w bazie jeszcze nic nie ma dla danego
+    klucza. Nigdy nie nadpisuje juz ustawionej wartosci z panelu."""
+    env_map = {
+        "unraid_host": "USC_SEED_UNRAID_HOST",
+        "unraid_api_key": "USC_SEED_UNRAID_API_KEY",
+        "telegram_bot_token": "USC_SEED_TELEGRAM_BOT_TOKEN",
+        "telegram_chat_id": "USC_SEED_TELEGRAM_CHAT_ID",
+    }
+    for key, env_name in env_map.items():
+        existing = db.query(Setting).filter(Setting.key == key).first()
+        if existing is None:
+            env_val = os.environ.get(env_name)
+            if env_val:
+                db.add(Setting(key=key, value=env_val))
+    db.commit()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 

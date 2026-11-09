@@ -1,16 +1,13 @@
 """USC - alerty Telegram.
 
 Wysyla wiadomosc przez Bot API dla incydentow WARNING i wyzej. Token/chat_id
-z zmiennych srodowiskowych - brak konfiguracji = cichy no-op (nie wywala
-backendu), zeby MVP dzialal nawet bez skonfigurowanych alertow.
+przekazywane jako argumenty (pobrane z panelu/bazy, nie ze zmiennych env) -
+brak konfiguracji = cichy no-op (nie wywala backendu), zeby system dzialal
+nawet bez skonfigurowanych alertow.
 """
-import os
 import json
 import urllib.request
 import urllib.error
-
-TELEGRAM_BOT_TOKEN = os.environ.get("USC_TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("USC_TELEGRAM_CHAT_ID", "")
 
 _SEVERITY_EMOJI = {
     "CRITICAL": "🔴",
@@ -23,7 +20,7 @@ _SEVERITY_EMOJI = {
 _NOTIFY_SEVERITIES = {"WARNING", "ERROR", "CRITICAL"}
 
 
-def send_incident_alert(incident: dict) -> bool:
+def send_incident_alert(incident: dict, bot_token: str | None, chat_id: str | None) -> bool:
     """incident = {"severity", "category", "source", "title", "detail"}. Zwraca True gdy wyslano.
 
     UWAGA: bez parse_mode (plain text) - z Markdown/MarkdownV2 Telegram API
@@ -34,7 +31,7 @@ def send_incident_alert(incident: dict) -> bool:
     severity = incident.get("severity", "INFO")
     if severity not in _NOTIFY_SEVERITIES:
         return False
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if not bot_token or not chat_id:
         return False
 
     emoji = _SEVERITY_EMOJI.get(severity, "")
@@ -45,10 +42,10 @@ def send_incident_alert(incident: dict) -> bool:
         f"{incident.get('detail', '')}"
     )
     body = json.dumps({
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text[:4000],
     }).encode()
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     req = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
     )

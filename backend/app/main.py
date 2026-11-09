@@ -1,29 +1,71 @@
 """USC - backend FastAPI.
 
-Faza 1 MVP: przyjmuje znormalizowane dane z kolektora, odpala Warstwę 1
-(reguly deterministyczne), zapisuje incydenty, udostepnia REST API i
-minimalny dashboard HTML (bez pelnego React - to przyjdzie w kolejnej iteracji).
+Przyjmuje znormalizowane dane z kolektora, odpala Warstwe 1 (reguly
+deterministyczne), zapisuje incydenty, udostepnia REST API, dashboard HTML
+(desktop+mobile) i panel ustawien. Dostep do panelu/API chroniony HTTP Basic
+Auth (admin); endpointy /ingest/* (kolektor->backend) chronione osobnym,
+wspoldzielonym tokenem wewnetrznym (bo port backendu jest wystawiony na
+hosta przez docker-compose).
 """
 from __future__ import annotations
+import os
 import json
+import secrets
 import datetime
 from typing import Any
 
-from fastapi import FastAPI, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Depends, Header, HTTPException, status, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from app.db import init_db, get_db, Incident, DiskHistory, SmartAttrHistory, DockerHealthHistory, VmHealthHistory
+from app.db import (
+    init_db, get_db, Incident, DiskHistory, SmartAttrHistory,
+    DockerHealthHistory, VmHealthHistory, get_all_settings, set_setting,
+    seed_settings_from_env,
+)
 from app import rules
 from app import telegram
 
-app = FastAPI(title="unRaid Security Center (USC)", version="0.1.0")
+app = FastAPI(title="unRaid Security Center (USC)", version="0.2.0")
+
+ADMIN_USER = os.environ.get("USC_ADMIN_USER", "")
+ADMIN_PASSWORD = os.environ.get("USC_ADMIN_PASSWORD", "")
+INTERNAL_TOKEN = os.environ.get("USC_INTERNAL_TOKEN", "")
+
+_security = HTTPBasic()
+
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(_security)) -> str:
+    ok_user = secrets.compare_digest(credentials.username, ADMIN_USER)
+    ok_pass = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+    if not (ok_user and ok_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Nieprawidlowy login lub haslo",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+def verify_internal(x_usc_token: str | None = Header(default=None)) -> None:
+    if not INTERNAL_TOKEN or not x_usc_token or not secrets.compare_digest(x_usc_token, INTERNAL_TOKEN):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Nieprawidlowy token wewnetrzny")
 
 
 @app.on_event("startup")
 def on_startup():
+    if not ADMIN_USER or not ADMIN_PASSWORD:
+        raise RuntimeError("USC_ADMIN_USER / USC_ADMIN_PASSWORD musza byc ustawione w .env")
+    if not INTERNAL_TOKEN:
+        raise RuntimeError("USC_INTERNAL_TOKEN musi byc ustawiony w .env (wspoldzielony z kolektorem)")
     init_db()
+    db = next(get_db())
+    try:
+        seed_settings_from_env(db)
+    finally:
+        db.close()
 
 
 @app.get("/health")
@@ -44,7 +86,10 @@ def _save_incident(db: Session, inc: dict[str, Any], raw: dict | None = None):
     )
     db.add(row)
     db.commit()
-    notified = telegram.send_incident_alert(inc)
+    settings = get_all_settings(db)
+    notified = telegram.send_incident_alert(
+        inc, settings.get("telegram_bot_token"), settings.get("telegram_chat_id")
+    )
     if notified:
         row.notified = True
         db.commit()
@@ -52,7 +97,7 @@ def _save_incident(db: Session, inc: dict[str, Any], raw: dict | None = None):
 
 
 @app.post("/ingest/disks")
-def ingest_disks(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_disks(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """Kolektor wysyla liste dyskow ze stanem z GraphQL unRAID.
 
     payload = {"disks": [{"device": "sda", "status": "DISK_OK", "warning": false,
@@ -87,7 +132,7 @@ def ingest_disks(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/docker")
-def ingest_docker(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_docker(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"containers": [{"name": ..., "state": "EXITED", "status": "...", "auto_start": bool}]}"""
     found = []
     for c in payload.get("containers", []):
@@ -98,7 +143,7 @@ def ingest_docker(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/array")
-def ingest_array(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_array(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"array_state": "STARTED", "parity_errors": N}"""
     found = []
     for inc in rules.rule_array_not_started(payload.get("array_state")):
@@ -111,7 +156,7 @@ def ingest_array(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/shares")
-def ingest_shares(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_shares(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"shares": [{"name": "array", "used_pct": 92.3, "free_gb": 120}]}"""
     found = []
     for share in payload.get("shares", []):
@@ -122,7 +167,7 @@ def ingest_shares(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/syslog")
-def ingest_syslog(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_syslog(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"lines": ["...", "..."]}"""
     found = []
     for line in payload.get("lines", []):
@@ -133,7 +178,7 @@ def ingest_syslog(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/smart")
-def ingest_smart(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_smart(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"disks": [{"device","model","attr_5","attr_187","attr_188",
     "attr_197","attr_198","attr_199","nvme_media_errors","nvme_critical_warning",
     "temperature"}]} - z Fazy 2, kolektor zdobywa dane przez SSH+smartctl."""
@@ -175,7 +220,7 @@ def ingest_smart(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/docker_health")
-def ingest_docker_health(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_docker_health(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"containers": [{"name","restart_count","oom_killed",
     "health_status","state","exit_code","started_at"}]} - z plugina USC,
     docker inspect przez ograniczony klucz SSH (dyspozytor)."""
@@ -207,7 +252,7 @@ def ingest_docker_health(payload: dict[str, Any], db: Session = Depends(get_db))
 
 
 @app.post("/ingest/vm_health")
-def ingest_vm_health(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_vm_health(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"vms": [{"name","state"}]} - z plugina USC (virsh domstate)."""
     found = []
     for vm in payload.get("vms", []):
@@ -229,7 +274,7 @@ def ingest_vm_health(payload: dict[str, Any], db: Session = Depends(get_db)):
 
 
 @app.post("/ingest/vm_log")
-def ingest_vm_log(payload: dict[str, Any], db: Session = Depends(get_db)):
+def ingest_vm_log(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
     """payload = {"lines": [["vm_name", "linia logu"], ...]} - z plugina USC
     (tail logow qemu per VM)."""
     pairs = [(item[0], item[1]) for item in payload.get("lines", []) if len(item) == 2]
@@ -239,10 +284,22 @@ def ingest_vm_log(payload: dict[str, Any], db: Session = Depends(get_db)):
     return {"incidents_found": len(found), "incidents": found}
 
 
+@app.get("/internal/settings")
+def internal_settings(db: Session = Depends(get_db), _=Depends(verify_internal)):
+    """Kolektor pobiera stad host/klucz unRAID (ustawiane w panelu, nie w
+    env kolektora) - odpytywane okresowo, zeby zmiana w panelu dzialala bez
+    przebudowy kontenera kolektora."""
+    settings = get_all_settings(db)
+    return {
+        "unraid_host": settings.get("unraid_host"),
+        "unraid_api_key": settings.get("unraid_api_key"),
+    }
+
+
 @app.get("/incidents")
 def list_incidents(
     limit: int = 100, status: str | None = None, severity: str | None = None,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), _=Depends(verify_admin),
 ):
     q = db.query(Incident).order_by(desc(Incident.created_at))
     if status:
@@ -261,7 +318,7 @@ def list_incidents(
 
 
 @app.post("/incidents/{incident_id}/ack")
-def acknowledge_incident(incident_id: int, db: Session = Depends(get_db)):
+def acknowledge_incident(incident_id: int, db: Session = Depends(get_db), _=Depends(verify_admin)):
     row = db.query(Incident).filter(Incident.id == incident_id).first()
     if not row:
         return {"error": "not found"}
@@ -271,7 +328,7 @@ def acknowledge_incident(incident_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/incidents/{incident_id}/resolve")
-def resolve_incident(incident_id: int, db: Session = Depends(get_db)):
+def resolve_incident(incident_id: int, db: Session = Depends(get_db), _=Depends(verify_admin)):
     row = db.query(Incident).filter(Incident.id == incident_id).first()
     if not row:
         return {"error": "not found"}
@@ -284,9 +341,19 @@ _SEVERITY_COLOR = {
     "CRITICAL": "#B00020", "ERROR": "#E65100", "WARNING": "#F9A825", "INFO": "#1565C0",
 }
 
+_PAGE_STYLE = """
+  * { box-sizing: border-box; min-width: 0; }
+  body { background:#0d0d0f; color:#eee; font-family: -apple-system, Segoe UI, sans-serif; margin:0; padding:24px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:#777; font-size:13px; margin-bottom:20px; }
+  a { color:#4a9eff; text-decoration:none; }
+  .nav { margin-bottom:20px; font-size:13px; }
+  .nav a { margin-right:16px; }
+"""
+
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(db: Session = Depends(get_db)):
+def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     rows = db.query(Incident).order_by(desc(Incident.created_at)).limit(200).all()
     new_count = db.query(Incident).filter(Incident.status == "NEW").count()
     crit_count = db.query(Incident).filter(
@@ -306,7 +373,6 @@ def dashboard(db: Session = Depends(get_db)):
           <td style="padding:6px 10px;">{r.title}</td>
           <td style="padding:6px 10px; color:#777; font-size:12px;">{r.status}</td>
         </tr>"""
-        # Karta mobilna - te same dane, uklad pionowy (zero scrolla w bok)
         cards_html += f"""
         <div class="card">
           <div class="card-top">
@@ -326,10 +392,7 @@ def dashboard(db: Session = Depends(get_db)):
 <title>unRaid Security Center</title>
 <meta http-equiv="refresh" content="30">
 <style>
-  * {{ box-sizing: border-box; min-width: 0; }}
-  body {{ background:#0d0d0f; color:#eee; font-family: -apple-system, Segoe UI, sans-serif; margin:0; padding:24px; }}
-  h1 {{ font-size:20px; margin-bottom:4px; }}
-  .sub {{ color:#777; font-size:13px; margin-bottom:20px; }}
+{_PAGE_STYLE}
   .stats {{ display:flex; flex-wrap:wrap; gap:16px; margin-bottom:24px; }}
   .stat {{ background:#1a1a1d; border-radius:8px; padding:16px 24px; flex:1 1 140px; }}
   .stat .num {{ font-size:28px; font-weight:700; }}
@@ -355,7 +418,8 @@ def dashboard(db: Session = Depends(get_db)):
 </style></head>
 <body>
   <h1>🛡️ unRaid Security Center (USC)</h1>
-  <div class="sub">Octopus unRAID — Faza 1 MVP — odświeża się co 30s</div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a></div>
+  <div class="sub">Odświeża się co 30s</div>
   <div class="stats">
     <div class="stat"><div class="num" style="color:#B00020;">{crit_count}</div><div class="label">Krytyczne (nowe)</div></div>
     <div class="stat"><div class="num">{new_count}</div><div class="label">Nowe incydenty</div></div>
@@ -372,3 +436,72 @@ def dashboard(db: Session = Depends(get_db)):
   </div>
 </body></html>"""
     return html
+
+
+def _mask(value: str | None, keep: int = 4) -> str:
+    if not value:
+        return ""
+    if len(value) <= keep:
+        return "•" * len(value)
+    return value[:keep] + "•" * max(len(value) - keep, 4)
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved: int = 0):
+    s = get_all_settings(db)
+    banner = '<div class="banner">Zapisano ustawienia.</div>' if saved else ""
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>USC - Ustawienia</title>
+<style>
+{_PAGE_STYLE}
+  .banner {{ background:#1b3a1b; color:#9fdc9f; padding:10px 14px; border-radius:6px; margin-bottom:16px; font-size:13px; }}
+  form {{ background:#1a1a1d; border-radius:8px; padding:20px; max-width:560px; }}
+  label {{ display:block; font-size:12px; color:#999; text-transform:uppercase; margin:16px 0 6px; }}
+  label:first-of-type {{ margin-top:0; }}
+  input {{ width:100%; padding:10px 12px; border-radius:6px; border:1px solid #333; background:#111; color:#eee; font-size:14px; }}
+  .hint {{ color:#666; font-size:12px; margin-top:4px; }}
+  button {{ margin-top:20px; padding:10px 20px; border-radius:6px; border:none; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
+</style></head>
+<body>
+  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a></div>
+  {banner}
+  <form method="POST" action="/settings">
+    <label>Host unRAID (IP)</label>
+    <input name="unraid_host" value="{s.get('unraid_host') or ''}" placeholder="192.168.1.10" required>
+
+    <label>Klucz API unRAID (rola VIEWER)</label>
+    <input name="unraid_api_key" type="password" placeholder="{_mask(s.get('unraid_api_key')) or 'wklej nowy klucz'}">
+    <div class="hint">Zostaw puste, żeby nie zmieniać obecnego klucza.</div>
+
+    <label>Token bota Telegram</label>
+    <input name="telegram_bot_token" type="password" placeholder="{_mask(s.get('telegram_bot_token')) or 'np. z @BotFather'}">
+    <div class="hint">Zostaw puste, żeby nie zmieniać. Pamiętaj: musisz najpierw sam napisać do bota.</div>
+
+    <label>Chat ID Telegram (odbiorca alertów)</label>
+    <input name="telegram_chat_id" value="{s.get('telegram_chat_id') or ''}" placeholder="123456789">
+
+    <button type="submit">Zapisz</button>
+  </form>
+</body></html>"""
+    return html
+
+
+@app.post("/settings")
+def settings_save(
+    unraid_host: str = Form(...),
+    unraid_api_key: str = Form(""),
+    telegram_bot_token: str = Form(""),
+    telegram_chat_id: str = Form(""),
+    db: Session = Depends(get_db), _=Depends(verify_admin),
+):
+    set_setting(db, "unraid_host", unraid_host.strip())
+    if unraid_api_key.strip():
+        set_setting(db, "unraid_api_key", unraid_api_key.strip())
+    if telegram_bot_token.strip():
+        set_setting(db, "telegram_bot_token", telegram_bot_token.strip())
+    set_setting(db, "telegram_chat_id", telegram_chat_id.strip())
+    return RedirectResponse(url="/settings?saved=1", status_code=303)

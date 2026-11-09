@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: usc
-      POSTGRES_PASSWORD: "${USC_DB_PASSWORD:?ustaw USC_DB_PASSWORD w .env}"
+      POSTGRES_PASSWORD: "${USC_DB_PASSWORD:?ustaw USC_DB_PASSWORD w .env (losowe, patrz docs/INSTALL.md)}"
       POSTGRES_DB: usc
     volumes:
       - usc-postgres-data:/var/lib/postgresql/data
@@ -21,8 +21,15 @@ services:
     restart: unless-stopped
     environment:
       USC_DATABASE_URL: "postgresql://usc:${USC_DB_PASSWORD}@usc-postgres:5432/usc"
-      USC_TELEGRAM_BOT_TOKEN: "${USC_TELEGRAM_BOT_TOKEN}"
-      USC_TELEGRAM_CHAT_ID: "${USC_TELEGRAM_CHAT_ID}"
+      USC_ADMIN_USER: "${USC_ADMIN_USER:?ustaw USC_ADMIN_USER w .env}"
+      USC_ADMIN_PASSWORD: "${USC_ADMIN_PASSWORD:?ustaw USC_ADMIN_PASSWORD w .env (losowe)}"
+      USC_INTERNAL_TOKEN: "${USC_INTERNAL_TOKEN:?ustaw USC_INTERNAL_TOKEN w .env (losowy, wspoldzielony z kolektorem)}"
+      # Jednorazowe seedowanie panelu przy pierwszym starcie (migracja z .env) -
+      # po pierwszym boocie edytuj te wartosci w panelu /settings, nie tutaj.
+      USC_SEED_UNRAID_HOST: "${USC_UNRAID_HOST}"
+      USC_SEED_UNRAID_API_KEY: "${USC_UNRAID_API_KEY}"
+      USC_SEED_TELEGRAM_BOT_TOKEN: "${USC_TELEGRAM_BOT_TOKEN}"
+      USC_SEED_TELEGRAM_CHAT_ID: "${USC_TELEGRAM_CHAT_ID}"
     depends_on:
       - usc-postgres
     ports:
@@ -36,10 +43,8 @@ services:
     container_name: usc-collector
     restart: unless-stopped
     environment:
-      USC_UNRAID_HOST: "${USC_UNRAID_HOST:?ustaw USC_UNRAID_HOST w .env (IP serwera unRAID)}"
-      USC_UNRAID_URL: "http://${USC_UNRAID_HOST}/graphql"
-      USC_UNRAID_API_KEY: "${USC_UNRAID_API_KEY:?ustaw USC_UNRAID_API_KEY w .env}"
       USC_BACKEND_URL: "http://usc-backend:8000"
+      USC_INTERNAL_TOKEN: "${USC_INTERNAL_TOKEN:?ustaw USC_INTERNAL_TOKEN w .env (ta sama wartosc co w backendzie)}"
       USC_POLL_SECONDS: "${USC_POLL_SECONDS:-60}"
       USC_SMART_POLL_SECONDS: "${USC_SMART_POLL_SECONDS:-600}"
       USC_DOCKER_HEALTH_POLL_SECONDS: "${USC_DOCKER_HEALTH_POLL_SECONDS:-300}"
