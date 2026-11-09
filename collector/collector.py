@@ -37,6 +37,32 @@ SMART_POLL_SECONDS = int(os.environ.get("USC_SMART_POLL_SECONDS", "600"))
 OPS_KEY_PATH = os.environ.get("USC_OPS_KEY_PATH", "/app/keys/usc_ops_key")
 DOCKER_HEALTH_ENABLED = os.environ.get("USC_DOCKER_HEALTH_ENABLED", "1") == "1"
 DOCKER_HEALTH_POLL_SECONDS = int(os.environ.get("USC_DOCKER_HEALTH_POLL_SECONDS", "300"))
+
+_SSH_CM_DIR = "/tmp/ssh-cm"
+
+
+def _ssh_multiplex_opts(key_tag: str) -> list[str]:
+    """Opcje SSH ControlMaster/ControlPersist - wielokrotne wywolania przez
+    TEN SAM klucz w krotkim oknie czasu wspoldziela JEDNO polaczenie TCP
+    zamiast otwierac nowe za kazdym razem. Bez tego kazdy pojedynczy odczyt
+    (SMART co 600s, dyspozytor co 180-900s w 3 niezaleznych petlach) generuje
+    ~11 linii logu sshd na unRAID (Accepted publickey/session opened/closed/
+    disconnect) - przy czestych odpytaniach to realny spam w syslogu serwera.
+    ControlPath MUSI zawierac key_tag (nie tylko %r@%h:%p) zeby klucze
+    'smart' i 'ops' (ten sam host/user, inny plik tozsamosci) nigdy nie
+    dzielily tego samego gniazda - inaczej drugi klucz moglby po cichu
+    uzyc juz otwartego polaczenia pierwszego."""
+    os.makedirs(_SSH_CM_DIR, exist_ok=True)
+    return [
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "ConnectTimeout=15",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=900",
+        "-o", f"ControlPath={_SSH_CM_DIR}/{key_tag}-%r@%h:%p",
+    ]
+
+
 SYSLOG_PREVIOUS_ENABLED = os.environ.get("USC_SYSLOG_PREVIOUS_ENABLED", "1") == "1"
 SYSLOG_PREVIOUS_POLL_SECONDS = int(os.environ.get("USC_SYSLOG_PREVIOUS_POLL_SECONDS", "900"))
 VM_ENABLED = os.environ.get("USC_VM_ENABLED", "1") == "1"
@@ -259,13 +285,7 @@ def fetch_smart_dump() -> dict | None:
         return None
     try:
         result = subprocess.run(
-            [
-                "ssh", "-i", SMART_KEY_PATH,
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "IdentitiesOnly=yes",
-                "-o", "ConnectTimeout=15",
-                f"root@{host}",
-            ],
+            ["ssh", "-i", SMART_KEY_PATH] + _ssh_multiplex_opts("smart") + [f"root@{host}"],
             capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0:
@@ -336,13 +356,7 @@ def run_ops_dispatch(action: str) -> str | None:
         return None
     try:
         result = subprocess.run(
-            [
-                "ssh", "-i", OPS_KEY_PATH,
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "IdentitiesOnly=yes",
-                "-o", "ConnectTimeout=15",
-                f"root@{host}", action,
-            ],
+            ["ssh", "-i", OPS_KEY_PATH] + _ssh_multiplex_opts("ops") + [f"root@{host}", action],
             capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0:

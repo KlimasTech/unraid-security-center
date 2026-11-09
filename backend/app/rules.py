@@ -378,6 +378,38 @@ def rule_kernel_panic(log_line: str) -> list[dict]:
     return out
 
 
+def rule_webgui_login(log_line: str) -> list[dict]:
+    """Logowanie do WebGUI unRAID (zrodlo: 'webgui:' w syslogu) -> widoczne
+    info w panelu, zamiast szumu z laczen SSH kolektora. Udane logowanie
+    = INFO (nie powiadamia Telegram, tylko widoczne w dashboardzie).
+    Nieudane logowanie = WARNING (powiadamia - realny sygnal bezpieczenstwa).
+    """
+    out = []
+    if "webgui:" not in log_line:
+        return out
+    if "Successful login" in log_line:
+        detail = log_line.split("webgui:", 1)[1].strip()
+        out.append({
+            "severity": "INFO",
+            "category": "webgui_access",
+            "source": "syslog",
+            "rule_id": "webgui_login_success",
+            "title": f"Logowanie do WebGUI: {detail}",
+            "detail": f"Linia logu: {log_line[:500]}",
+        })
+    elif "Failed login" in log_line or "failed login" in log_line.lower():
+        detail = log_line.split("webgui:", 1)[1].strip()
+        out.append({
+            "severity": "WARNING",
+            "category": "webgui_access",
+            "source": "syslog",
+            "rule_id": "webgui_login_failed",
+            "title": f"Nieudane logowanie do WebGUI: {detail}",
+            "detail": f"Linia logu: {log_line[:500]}",
+        })
+    return out
+
+
 def rule_disk_space_low(share: dict[str, Any], threshold_pct: float = 90.0) -> list[dict]:
     """Przestrzen dyskowa (share/array/cache) ponizej progu -> WARNING."""
     out = []

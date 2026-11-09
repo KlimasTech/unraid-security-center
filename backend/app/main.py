@@ -180,6 +180,9 @@ def ingest_syslog(payload: dict[str, Any], db: Session = Depends(get_db), _=Depe
         for inc in rules.rule_kernel_panic(line):
             _save_incident(db, inc, raw={"line": line})
             found.append(inc)
+        for inc in rules.rule_webgui_login(line):
+            _save_incident(db, inc, raw={"line": line})
+            found.append(inc)
     return {"incidents_found": len(found), "incidents": found}
 
 
@@ -361,7 +364,9 @@ _PAGE_STYLE = """
 @app.get("/", response_class=HTMLResponse)
 def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     rows = db.query(Incident).order_by(desc(Incident.created_at)).limit(200).all()
-    new_count = db.query(Incident).filter(Incident.status == "NEW").count()
+    new_count = db.query(Incident).filter(
+        Incident.status == "NEW", Incident.severity != "INFO"
+    ).count()
     crit_count = db.query(Incident).filter(
         Incident.status == "NEW", Incident.severity == "CRITICAL"
     ).count()
