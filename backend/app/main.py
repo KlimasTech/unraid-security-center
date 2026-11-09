@@ -518,9 +518,9 @@ def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
   <div class="banner ok">Połączono z unRAID — IP: {s.get('unraid_host')}</div>
   <p style="color:#999; font-size:13px; max-width:480px;">
     Klucze SSH i klucz API są aktywne, kolektor zbiera dane. Rozłączenie
-    usuwa tylko wpisy z panelu (host/klucz API) — klucze SSH w
-    <code>authorized_keys</code> na unRAID zostają, więc możesz się
-    połączyć ponownie bez ponownego wpisywania hasła roota.
+    usuwa wszystko: wpisy z <code>authorized_keys</code> na unRAID, klucz
+    API i lokalne pliki kluczy — bez śmieci. Ponowne połączenie wymaga
+    znowu wpisania hasła roota.
   </p>
   <form method="POST" action="/wizard/disconnect" onsubmit="return confirm('Rozłączyć USC od unRAID {s.get('unraid_host')}?');">
     <button type="submit" class="danger">Rozłącz</button>
@@ -630,6 +630,38 @@ def wizard_connect(
 
 @app.post("/wizard/disconnect")
 def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    s = get_all_settings(db)
+    host = s.get("unraid_host") or ""
+    result = unraid_pair.unpair(host) if host else {"steps": []}
     set_setting(db, "unraid_host", "")
     set_setting(db, "unraid_api_key", "")
-    return RedirectResponse(url="/wizard", status_code=303)
+
+    steps_html = ""
+    for step in result["steps"]:
+        icon = "✅" if step["ok"] else "❌"
+        steps_html += f"""<div class="wiz-step"><span class="wiz-icon">{icon}</span>
+          <div><div class="wiz-name">{step['name']}</div><div class="wiz-detail">{step['detail']}</div></div>
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>USC - Rozłączono</title>
+<style>
+{_PAGE_STYLE}
+  .banner {{ padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:14px; }}
+  .banner.ok {{ background:#1b3a1b; color:#9fdc9f; }}
+  .wiz-step {{ display:flex; gap:12px; align-items:flex-start; background:#1a1a1d; border-radius:8px; padding:12px 14px; margin-bottom:8px; max-width:560px; }}
+  .wiz-icon {{ font-size:18px; }}
+  .wiz-name {{ font-size:14px; font-weight:600; }}
+  .wiz-detail {{ font-size:12px; color:#999; margin-top:2px; }}
+</style></head>
+<body>
+  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <div class="banner ok">Rozłączono od {host or 'unRAID'}. Posprzątano wpisy w authorized_keys, klucz API i lokalne pliki kluczy.</div>
+  {steps_html}
+  <p style="margin-top:20px;"><a href="/wizard">← Wróć do parowania</a></p>
+</body></html>"""
+    return html

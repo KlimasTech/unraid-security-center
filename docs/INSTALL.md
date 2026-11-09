@@ -101,9 +101,9 @@ Na unRAID, dopisz do `/root/.ssh/authorized_keys` (zastąp `<PUBKEY_*>`
 zawartością odpowiedniego `.pub`):
 
 ```
-command="tail -n0 -F /var/log/syslog",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <PUBKEY_collector>
-command="/bin/bash /usr/local/emhttp/plugins/unraid-security-center/scripts/usc_smart_dump.sh",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <PUBKEY_smart>
-command="/bin/bash /usr/local/emhttp/plugins/unraid-security-center/scripts/usc_dispatch.sh",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <PUBKEY_ops>
+command="tail -n0 -F /var/log/syslog",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <PUBKEY_collector> # USC-managed
+command="/bin/bash /usr/local/emhttp/plugins/unraid-security-center/scripts/usc_smart_dump.sh",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <PUBKEY_smart> # USC-managed
+command="/bin/bash /usr/local/emhttp/plugins/unraid-security-center/scripts/usc_dispatch.sh",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty <PUBKEY_ops> # USC-managed
 ```
 
 Zweryfikuj każdy klucz (powinien zwrócić dane, a próba innej komendy — błąd):

@@ -21,6 +21,17 @@ case "$SSH_ORIGINAL_COMMAND" in
   vm_log_tail)
     exec /bin/bash "$DIR/usc_vm_log_tail.sh"
     ;;
+  unpair)
+    # Rozlaczenie z panelu USC: usuwa WSZYSTKIE 3 wpisy USC z
+    # authorized_keys (oznaczone komentarzem "# USC-managed" przy
+    # instalacji - patrz unraid_pair.py/usc_pair.sh) i usuwa klucz API
+    # unRAID "USC ReadOnly". Dziala rowniez dla klucza, ktorym wlasnie
+    # zostala wywolana ta komenda - usuniecie linii z authorized_keys NIE
+    # przerywa juz trwajacej sesji SSH, tylko blokuje przyszle polaczenia.
+    sed -i '/# USC-managed$/d' /root/.ssh/authorized_keys
+    /usr/local/sbin/unraid-api apikey --delete --name "USC ReadOnly" --json 2>&1 || true
+    echo "USC_UNPAIR_OK"
+    ;;
   *)
     echo "USC_DISPATCH_REJECTED: nieznana akcja" >&2
     exit 1

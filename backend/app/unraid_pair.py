@@ -78,7 +78,7 @@ def install_authorized_key(client: paramiko.SSHClient, pubkey: str, command: str
         return False
     line = (
         f'command="{command}",no-port-forwarding,no-X11-forwarding,'
-        f'no-agent-forwarding,no-pty {pubkey}'
+        f'no-agent-forwarding,no-pty {pubkey} # USC-managed'
     )
     append_cmd = f"mkdir -p /root/.ssh && echo {_shq(line)} >> /root/.ssh/authorized_keys"
     _, stdout, stderr = client.exec_command(append_cmd)
@@ -123,6 +123,53 @@ def create_or_fetch_api_key(client: paramiko.SSHClient) -> str:
     if not m:
         raise PairingError(f"Nie udalo sie utworzyc/pobrac klucza API unRAID: {out} {err}".strip())
     return m.group(1)
+
+
+def unpair(host: str) -> dict:
+    """Usuwa parowanie: wpisy USC z authorized_keys + klucz API unRAID (przez
+    'unpair' w dyspozytorze, wywolane kluczem ops), potem lokalne pliki
+    kluczy z wolumenu. Nie wymaga hasla - uzywa juz zainstalowanego klucza
+    ops. Zwraca slownik z wynikiem kazdego etapu."""
+    steps: list[dict] = []
+    ops_priv = os.path.join(KEYS_DIR, "usc_ops_key")
+
+    if not os.path.exists(ops_priv):
+        steps.append({"name": "Usuwanie wpisow na unRAID", "ok": False,
+                      "detail": "Brak lokalnego klucza ops - nic do zrobienia po stronie unRAID."})
+    else:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            key = paramiko.Ed25519Key.from_private_key_file(ops_priv)
+            client.connect(hostname=host, username="root", pkey=key, timeout=10,
+                            banner_timeout=10, auth_timeout=10, look_for_keys=False, allow_agent=False)
+            _, stdout, stderr = client.exec_command("unpair", timeout=15)
+            out = stdout.read().decode()
+            ok = "USC_UNPAIR_OK" in out
+            steps.append({
+                "name": "Usuwanie wpisow na unRAID",
+                "ok": ok,
+                "detail": "Wpisy authorized_keys i klucz API usunięte." if ok else f"Nie udało się: {out} {stderr.read().decode()}",
+            })
+        except Exception as e:
+            steps.append({"name": "Usuwanie wpisow na unRAID", "ok": False, "detail": str(e)})
+        finally:
+            client.close()
+
+    removed = []
+    for name, _cmd in KEY_SPECS:
+        for suffix in ("", ".pub"):
+            p = os.path.join(KEYS_DIR, f"{name}{suffix}")
+            if os.path.exists(p):
+                os.remove(p)
+                removed.append(f"{name}{suffix}")
+    steps.append({
+        "name": "Usuwanie lokalnych plikow kluczy",
+        "ok": True,
+        "detail": f"Usunięto {len(removed)} plików." if removed else "Nic do usunięcia (już puste).",
+    })
+
+    return {"steps": steps}
 
 
 def run_pairing(host: str, password: str) -> dict:

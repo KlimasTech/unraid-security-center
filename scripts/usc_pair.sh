@@ -66,7 +66,7 @@ install_key() {
     echo "==> Klucz $name juz jest w authorized_keys, pomijam."
   else
     echo "==> Instaluje klucz $name w authorized_keys (wymuszona komenda: $command)..."
-    ssh "root@$UNRAID_HOST" "mkdir -p /root/.ssh && echo 'command=\"$command\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $pubkey' >> /root/.ssh/authorized_keys"
+    ssh "root@$UNRAID_HOST" "mkdir -p /root/.ssh && echo 'command=\"$command\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty $pubkey # USC-managed' >> /root/.ssh/authorized_keys"
   fi
 }
 

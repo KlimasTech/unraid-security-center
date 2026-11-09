@@ -3,16 +3,22 @@
 <!ENTITY name      "unraid-security-center">
 <!ENTITY displayName "unRaid Security Center Plugin">
 <!ENTITY author    "Pawel / Heniek">
-<!ENTITY version   "2026.11.11">
+<!ENTITY version   "2026.11.12">
 <!ENTITY pkgname   "&name;-&version;.txz">
 <!ENTITY pkgdir    "/boot/config/plugins/&name;">
 <!ENTITY pkgpath   "&pkgdir;/&pkgname;">
-<!ENTITY packageMD5 "0bede99ce693dcb386959104e784733a">
+<!ENTITY packageMD5 "76e57d34c5e41690b3ed2cadc05fd4f8">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings">
 
 <CHANGES>
+###2026.11.12
+- Dodano akcje "unpair" do dyspozytora (usc_dispatch.sh): panel USC (przycisk
+  "Rozlacz" w /wizard) moze teraz samodzielnie usunac wszystkie 3 wpisy USC
+  z authorized_keys oraz klucz API unRAID, bez ponownego logowania sie na
+  unRAID recznie. Wpisy instalowane przez panel/skrypt sa teraz oznaczane
+  komentarzem "# USC-managed" zeby dyspozytor wiedzial, co usunac.
 ###2026.11.11
 - Dodano skrypty: usc_vm_health_dump.sh (stan domen libvirt/QEMU przez virsh),
   usc_vm_log_tail.sh (ostatnie 100 linii logu qemu per VM).
