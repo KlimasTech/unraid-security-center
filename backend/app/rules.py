@@ -12,7 +12,25 @@ zaplanowane jako rozszerzenie Fazy 2, NIE jest częścią tego MVP. Reguły
 poniżej pracują na realnych polach dostępnych teraz przez GraphQL.
 """
 from __future__ import annotations
+import re
 from typing import Any
+
+_SYSLOG_TS_RE = re.compile(r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}")
+_ISO_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
+
+
+def _log_timestamp(line: str) -> str:
+    """Wyciaga sam znacznik czasu z poczatku linii logu (format syslog
+    'MMM D HH:MM:SS' albo ISO 'YYYY-MM-DDTHH:MM:SS') zamiast pokazywac cala,
+    czesto dlugo, linie w alercie Telegram/panelu - tresc linii i tak jest
+    juz w tytule incydentu."""
+    m = _SYSLOG_TS_RE.match(line)
+    if m:
+        return m.group(0)
+    m = _ISO_TS_RE.match(line)
+    if m:
+        return m.group(0)
+    return line[:30]
 
 
 def rule_disk_critical(disk: dict[str, Any], prev: dict[str, Any] | None) -> list[dict]:
@@ -308,7 +326,7 @@ def rule_vm_log_errors(vm_lines: list[tuple[str, str]]) -> list[dict]:
                     "source": name,
                     "rule_id": rule_id,
                     "title": f"VM {name}: wykryto marker '{marker}' w logu qemu",
-                    "detail": f"Linia logu: {line[:500]}",
+                    "detail": f"Linia logu: {_log_timestamp(line)}",
                 })
                 break
     return out
@@ -372,7 +390,7 @@ def rule_kernel_panic(log_line: str) -> list[dict]:
                 "source": "syslog",
                 "rule_id": "kernel_panic_marker",
                 "title": f"Wykryto marker krytyczny kernela: '{m}'",
-                "detail": f"Linia logu: {log_line[:500]}",
+                "detail": f"Linia logu: {_log_timestamp(log_line)}",
             })
             break
     return out
@@ -400,7 +418,7 @@ def rule_webgui_login(log_line: str) -> list[dict]:
             "source": "syslog",
             "rule_id": "webgui_login_success",
             "title": f"Logowanie do WebGUI: {detail}",
-            "detail": f"Linia logu: {log_line[:500]}",
+            "detail": f"Linia logu: {_log_timestamp(log_line)}",
         })
     elif "Unsuccessful login" in log_line:
         detail = log_line.split("webgui:", 1)[1].strip()
@@ -410,7 +428,7 @@ def rule_webgui_login(log_line: str) -> list[dict]:
             "source": "syslog",
             "rule_id": "webgui_login_failed",
             "title": f"Nieudane logowanie do WebGUI: {detail}",
-            "detail": f"Linia logu: {log_line[:500]}",
+            "detail": f"Linia logu: {_log_timestamp(log_line)}",
         })
     return out
 
