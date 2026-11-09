@@ -1,7 +1,5 @@
 **unRaid Security Center Plugin**
 
-![unRaid Security Center](/plugins/unraid-security-center/images/logo-160.png)
-
 Zdalne skrypty telemetryczne (SMART, zdrowie Dockera, syslog po restarcie, stan VM)
 dla systemu monitorowania unRaid Security Center (USC), wywoływane wyłącznie przez
 ograniczone klucze SSH z panelu USC. Brak własnego WebGUI — czysto serwerowy,

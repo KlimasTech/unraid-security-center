@@ -34,7 +34,7 @@ app = FastAPI(title="unRaid Security Center (USC)", version="0.2.0")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 _LOGO_HEAD = '<link rel="icon" type="image/png" href="/static/favicon.png">'
-_LOGO_H1 = '<img src="/static/logo-64.png" alt="USC" style="height:28px;width:28px;border-radius:50%;vertical-align:-5px;margin-right:6px;"> unRaid Security Center (USC)'
+_LOGO_H1 = '<img src="/static/logo-96.png" alt="USC" style="height:48px;width:48px;border-radius:50%;vertical-align:-14px;margin-right:10px;"> unRaid Security Center (USC)'
 
 ADMIN_USER = os.environ.get("USC_ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("USC_ADMIN_PASSWORD", "")

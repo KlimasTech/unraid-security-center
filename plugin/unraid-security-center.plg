@@ -3,16 +3,21 @@
 <!ENTITY name      "unraid-security-center">
 <!ENTITY displayName "unRaid Security Center Plugin">
 <!ENTITY author    "KlimasTech">
-<!ENTITY version   "2026.11.14">
+<!ENTITY version   "2026.11.15">
 <!ENTITY pkgname   "&name;-&version;.txz">
 <!ENTITY pkgdir    "/boot/config/plugins/&name;">
 <!ENTITY pkgpath   "&pkgdir;/&pkgname;">
-<!ENTITY packageMD5 "0cba47e4b98478ac46601136421bf930">
+<!ENTITY packageMD5 "c159d21875de2a1435453fe872be7163">
 ]>
 
-<PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings">
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings" icon="logo.png">
 
 <CHANGES>
+###2026.11.15
+- Grafika (logo USC) przeniesiona z README.md na wlasciwa ikone pluginu
+  (atrybut icon="logo.png" na tagu PLUGIN) - widoczna jako ikonka obok nazwy
+  na liscie pluginow, nie jako obrazek w opisie.
+- Panel: wiekszy logotyp w naglowku kazdej strony (48px zamiast 28px).
 ###2026.11.14
 - Dodano logo (grafika unRAID Security Center) do README.md - widoczne na
   liscie pluginow unRAID.
