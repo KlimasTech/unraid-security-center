@@ -125,6 +125,36 @@ ustawionej wartości). Kolektor odpytuje `GET /internal/settings` (ten sam
 token wewnętrzny) co ~60s i odświeża swój lokalny stan w pamięci — zmiana
 w panelu działa z maks. tym opóźnieniem, bez redeployu.
 
+## Wizard parowania (`/wizard`) — dlaczego hasło roota, a nie klucz
+
+Przed wizardem parowanie wymagało ręcznego `ssh-keygen` + edycji
+`authorized_keys` + `unraid-api apikey --create` przez terminal — użytkownik
+poproszony o "łatwiejszy sposób, bez SSH" dostaje formularz web (`/wizard`):
+wpisuje IP unRAID i **hasło roota**, backend robi resztę przez `paramiko`
+(czysty Python, bez zewnętrznego `sshpass`, który eksponowałby hasło w
+`ps aux` na hoście).
+
+Hasło jest nieodzowne przy **pierwszym** parowaniu — to jedyny sposób
+udowodnienia, że ktoś ma prawo dodać nowy klucz do `authorized_keys` roota
+(klucz, który sam backend właśnie wygenerował, nie istniał wcześniej nigdzie
+na świecie, więc nie może posłużyć do autoryzacji samego siebie). Hasło:
+- żyje tylko w zmiennej lokalnej w pamięci procesu backendu, w ramach
+  jednego requestu HTTP,
+- nigdy nie trafia do bazy, logów, zmiennych środowiskowych, ani `.env`,
+- po zakończeniu funkcji `run_pairing()` referencja jest jawnie czyszczona.
+
+Klucze SSH generowane są **wewnątrz kontenera backendu** (`ssh-keygen`,
+openssh-client w obrazie) do wspólnego wolumenu `usc-keys-data`, montowanego
+też w kontenerze kolektora — dzięki temu kolektor zaczyna z nich korzystać
+bez rebuildu, od razu po zakończeniu wizarda. Wszystkie operacje są
+idempotentne (powtórne uruchomienie wizarda nie tworzy duplikatów ani w
+`authorized_keys`, ani w kluczach API unRAID).
+
+`scripts/usc_pair.sh` to równoległa ścieżka CLI (ten sam efekt, ta sama
+zasada haseł) dla kogoś, kto nie ma jeszcze dostępu do panelu web albo woli
+terminal — działa przez `docker exec` do już uruchomionego `usc-backend`,
+żeby trafić do tego samego wolumenu kluczy.
+
 ## Deduplikacja — dlaczego jest krytyczna
 
 Dwa źródła wymagają jej wprost, inaczej zalewają incydentami przy KAŻDYM

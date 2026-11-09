@@ -27,6 +27,7 @@ from app.db import (
 )
 from app import rules
 from app import telegram
+from app import unraid_pair
 
 app = FastAPI(title="unRaid Security Center (USC)", version="0.2.0")
 
@@ -418,7 +419,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>🛡️ unRaid Security Center (USC)</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   <div class="sub">Odświeża się co 30s</div>
   <div class="stats">
     <div class="stat"><div class="num" style="color:#B00020;">{crit_count}</div><div class="label">Krytyczne (nowe)</div></div>
@@ -467,7 +468,7 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
 </style></head>
 <body>
   <h1>🛡️ unRaid Security Center (USC)</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
   {banner}
   <form method="POST" action="/settings">
     <label>Host unRAID (IP)</label>
@@ -505,3 +506,101 @@ def settings_save(
         set_setting(db, "telegram_bot_token", telegram_bot_token.strip())
     set_setting(db, "telegram_chat_id", telegram_chat_id.strip())
     return RedirectResponse(url="/settings?saved=1", status_code=303)
+
+
+@app.get("/wizard", response_class=HTMLResponse)
+def wizard_page(_=Depends(verify_admin)):
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>USC - Połącz z unRAID</title>
+<style>
+{_PAGE_STYLE}
+  form {{ background:#1a1a1d; border-radius:8px; padding:20px; max-width:480px; }}
+  label {{ display:block; font-size:12px; color:#999; text-transform:uppercase; margin:16px 0 6px; }}
+  label:first-of-type {{ margin-top:0; }}
+  input {{ width:100%; padding:10px 12px; border-radius:6px; border:1px solid #333; background:#111; color:#eee; font-size:14px; }}
+  .hint {{ color:#666; font-size:12px; margin-top:4px; }}
+  button {{ margin-top:20px; padding:10px 20px; border-radius:6px; border:none; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
+  button:disabled {{ background:#444; cursor:wait; }}
+</style></head>
+<body>
+  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <p style="color:#999; font-size:13px; max-width:480px;">
+    Wklej IP unRAID i hasło roota. Hasło jest użyte TYLKO jednorazowo, przez to
+    jedno połączenie SSH - nigdzie nie jest zapisywane. USC sam wygeneruje
+    i zainstaluje klucze SSH oraz klucz API (wymaga wcześniej zainstalowanego
+    pluginu "unRaid Security Center Plugin" na unRAID).
+  </p>
+  <form method="POST" action="/wizard/connect" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Łączę...';">
+    <label>IP serwera unRAID</label>
+    <input name="unraid_host" placeholder="192.168.1.10" required>
+
+    <label>Hasło roota unRAID</label>
+    <input name="unraid_password" type="password" required autocomplete="off">
+    <div class="hint">Używane tylko teraz, nigdy nie jest zapisywane.</div>
+
+    <button type="submit">Połącz</button>
+  </form>
+</body></html>"""
+    return html
+
+
+@app.post("/wizard/connect", response_class=HTMLResponse)
+def wizard_connect(
+    unraid_host: str = Form(...),
+    unraid_password: str = Form(...),
+    db: Session = Depends(get_db), _=Depends(verify_admin),
+):
+    host = unraid_host.strip()
+    try:
+        result = unraid_pair.run_pairing(host, unraid_password)
+    except unraid_pair.PairingError as e:
+        result = {"success": False, "steps": [{"name": "Połączenie", "ok": False, "detail": str(e)}],
+                   "unraid_host": host, "unraid_api_key": None}
+    finally:
+        unraid_password = None  # noqa: F841 - jawne wyczyszczenie referencji do hasla
+
+    if result["success"]:
+        set_setting(db, "unraid_host", result["unraid_host"])
+        if result["unraid_api_key"]:
+            set_setting(db, "unraid_api_key", result["unraid_api_key"])
+
+    steps_html = ""
+    for step in result["steps"]:
+        icon = "✅" if step["ok"] else "❌"
+        steps_html += f"""<div class="wiz-step"><span class="wiz-icon">{icon}</span>
+          <div><div class="wiz-name">{step['name']}</div><div class="wiz-detail">{step['detail']}</div></div>
+        </div>"""
+
+    banner = (
+        '<div class="banner ok">Połączono! Ustawienia zapisane - host i klucz API są już aktywne.</div>'
+        if result["success"] else
+        '<div class="banner err">Parowanie nie powiodło się - zobacz szczegóły poniżej.</div>'
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>USC - Wynik parowania</title>
+<style>
+{_PAGE_STYLE}
+  .banner {{ padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:14px; }}
+  .banner.ok {{ background:#1b3a1b; color:#9fdc9f; }}
+  .banner.err {{ background:#3a1b1b; color:#e09b9b; }}
+  .wiz-step {{ display:flex; gap:12px; align-items:flex-start; background:#1a1a1d; border-radius:8px; padding:12px 14px; margin-bottom:8px; max-width:560px; }}
+  .wiz-icon {{ font-size:18px; }}
+  .wiz-name {{ font-size:14px; font-weight:600; }}
+  .wiz-detail {{ font-size:12px; color:#999; margin-top:2px; }}
+</style></head>
+<body>
+  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  {banner}
+  {steps_html}
+  <p style="margin-top:20px;"><a href="/settings">← Wróć do ustawień</a></p>
+</body></html>"""
+    return html

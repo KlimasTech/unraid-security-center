@@ -5,9 +5,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-client 
 
 WORKDIR /app
 COPY collector.py .
-COPY keys/usc_collector_key /app/keys/usc_collector_key
-COPY keys/usc_smart_key /app/keys/usc_smart_key
-COPY keys/usc_ops_key /app/keys/usc_ops_key
-RUN chmod 600 /app/keys/usc_collector_key /app/keys/usc_smart_key /app/keys/usc_ops_key
+# Klucze SSH NIE sa wbudowane w obraz - generowane w panelu (wizard
+# "Polacz z unRAID" na /wizard) albo przez scripts/usc_pair.sh, zapisywane
+# do wspoldzielonego wolumenu usc-keys-data (montowanego tu jako /app/keys).
+RUN mkdir -p /app/keys
 
 CMD ["python", "-u", "collector.py"]

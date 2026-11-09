@@ -34,6 +34,8 @@ services:
       - usc-postgres
     ports:
       - "${USC_WEB_PORT:-8420}:8000"
+    volumes:
+      - usc-keys-data:/app/keys
     networks:
       - usc-net
 
@@ -52,6 +54,8 @@ services:
       USC_VM_POLL_SECONDS: "${USC_VM_POLL_SECONDS:-180}"
     depends_on:
       - usc-backend
+    volumes:
+      - usc-keys-data:/app/keys
     networks:
       - usc-net
 
@@ -61,3 +65,4 @@ networks:
 
 volumes:
   usc-postgres-data:
+  usc-keys-data:

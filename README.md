@@ -26,10 +26,16 @@ Architektura ma dwie połówki:
 git clone https://github.com/KlimasTech/unraid-security-center.git
 cd unraid-security-center
 cp .env.example .env
-scripts/usc_pair.sh <IP_UNRAID>   # jedna komenda: klucze SSH + klucz API unRAID
-# wypelnij reszte .env (sekrety panelu, patrz docs/INSTALL.md), potem:
+# wypelnij sekrety panelu (USC_DB_PASSWORD, USC_ADMIN_USER/PASSWORD,
+# USC_INTERNAL_TOKEN) - patrz docs/INSTALL.md
 docker compose up -d --build
 ```
+
+Potem **zaloguj się do panelu** (`http://<IP_HOSTA_DOCKER>:8420/`) i otwórz
+**"Połącz z unRAID"** (`/wizard`) — wpisz IP unRAID i hasło roota, backend
+sam wygeneruje klucze SSH i klucz API. **Zero komend SSH** po Twojej
+stronie. (Wymaga wcześniej zainstalowanego pluginu — krok 1 w INSTALL.md.)
+Alternatywa z terminala: `scripts/usc_pair.sh <IP_UNRAID>`.
 
 Plugin na samym unRAID instaluje się osobno — pełna procedura w
 [`docs/INSTALL.md`](docs/INSTALL.md).

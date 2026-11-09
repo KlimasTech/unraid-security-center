@@ -22,6 +22,25 @@ sprawdź `docker logs usc-collector | grep "Czekam na skonfigurowanie"`
 
 ## SSH
 
+## Wizard parowania (`/wizard`)
+
+**"Nieprawidłowe hasło roota unRAID"** mimo poprawnego hasła.
+Sprawdź czy na unRAID nie jest ustawiony `PasswordAuthentication no` w
+`/etc/ssh/sshd_config` (rzadkie, ale możliwe po ręcznym hardeningu) — jeśli
+tak, wizard nie zadziała, użyj ręcznej procedury z `docs/INSTALL.md`
+(klucz, który już masz zaufany, zamiast hasła).
+
+**"Nie znaleziono pluginu"** mimo że plugin jest zainstalowany.
+Sprawdź dokładną ścieżkę: `ssh root@<IP> "ls -la /usr/local/emhttp/plugins/unraid-security-center/scripts/"`
+— jeśli katalog ma inną nazwę (np. literówka w wersji), wizard nie znajdzie
+`usc_dispatch.sh`.
+
+**Wizard działa, ale kolektor dalej nie widzi kluczy.**
+Klucze trafiają do wolumenu `usc-keys-data`, montowanego w OBU kontenerach
+(`usc-backend` i `usc-collector`). Jeśli dodałeś wolumen "na nowo" bez
+`docker compose down -v` najpierw, sprawdź: `docker exec usc-collector ls -la /app/keys`
+— powinny tam być te same pliki co w `docker exec usc-backend ls -la /app/keys`.
+
 **Kolektor loguje `Connection refused` do backendu przy starcie.**
 Normalne — to wyścig startowy `docker compose up`: kolektor czasem
 wystartowuje szybciej niż backend zdąży otworzyć port. Kontenery mają

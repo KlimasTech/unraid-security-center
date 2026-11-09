@@ -41,32 +41,50 @@ Zweryfikuj:
 ssh root@<IP_UNRAID> "bash /usr/local/emhttp/plugins/unraid-security-center/scripts/usc_smart_dump.sh | head -c 200"
 ```
 
-## 2. Sparuj USC z pluginem (jedna komenda)
+## 2. Sparuj USC z pluginem — przez panel (bez SSH)
 
-Na **hoście, na którym postawisz kontenery** (nie na unRAID), z działającym
-dostępem SSH root do unRAID (hasło albo już zaufany klucz):
+Na hoście, na którym postawisz kontenery:
 
 ```bash
-scripts/usc_pair.sh <IP_UNRAID>
+cp .env.example .env
 ```
 
-To zastępuje wszystkie poniższe ręczne kroki naraz:
-- generuje 3 ograniczone klucze SSH (`collector/keys/`),
-- instaluje je w `/root/.ssh/authorized_keys` na unRAID (`command=`
-  wymuszone server-side — zero shella),
-- weryfikuje że działają,
-- tworzy (albo pobiera, jeśli już istnieje — `unraid-api` jest
-  idempotentny) klucz API unRAID z rolą VIEWER,
-- zapisuje `USC_UNRAID_HOST`/`USC_UNRAID_API_KEY` do `.env`.
+Wypełnij w `.env` **tylko** sekrety panelu (wygeneruj losowe):
 
-**Bezpiecznie uruchamiać wielokrotnie** — każdy krok sprawdza, czy coś już
-istnieje, zanim je utworzy (idempotentny).
+```bash
+echo "USC_DB_PASSWORD=$(openssl rand -hex 16)"
+echo "USC_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
+echo "USC_INTERNAL_TOKEN=$(openssl rand -hex 24)"
+```
 
-Jeśli wolisz zrobić to ręcznie krok po kroku (albo coś nie zadziała), pełna
+Wklej wyniki do `.env` (`USC_ADMIN_USER` zostaw jako `admin` albo zmień),
+potem:
+
+```bash
+docker compose up -d --build
+```
+
+Zaloguj się na `http://<IP_HOSTA_DOCKER>:8420/` loginem/hasłem z
+`USC_ADMIN_USER`/`USC_ADMIN_PASSWORD`, kliknij **"Połącz z unRAID"**
+(`/wizard`), wpisz IP unRAID i **hasło roota** — backend sam:
+- sprawdzi że plugin jest zainstalowany,
+- wygeneruje 3 ograniczone klucze SSH i zainstaluje je w `authorized_keys`,
+- zweryfikuje że działają,
+- utworzy (albo pobierze, jeśli już istnieje) klucz API unRAID (VIEWER),
+- zapisze host/klucz API w panelu.
+
+**Hasło roota jest użyte tylko przez ten jeden request — nigdzie nie jest
+zapisywane.** Zero komend w terminalu po Twojej stronie.
+
+Jeśli wolisz CLI (albo panel jeszcze nie jest dostępny z Twojej sieci),
+użyj `scripts/usc_pair.sh <IP_UNRAID>` — robi to samo z terminala, przez
+`docker exec` do już działającego kontenera `usc-backend`.
+
+Jeśli wolisz zrobić to w pełni ręcznie (bez skryptu i bez wizarda), pełna
 procedura manualna jest niżej.
 
 <details>
-<summary>Ręczna procedura (bez skryptu)</summary>
+<summary>Ręczna procedura (bez skryptu/wizarda)</summary>
 
 ### Wygeneruj klucze SSH
 
@@ -106,7 +124,7 @@ Zapisz zwrócony klucz — potrzebny w `.env` jako `USC_UNRAID_API_KEY`.
 
 </details>
 
-## 3. (Opcjonalnie) Bot Telegram
+## 4. (Opcjonalnie) Bot Telegram i dalsza konfiguracja
 
 1. W Telegramie napisz do `@BotFather` → `/newbot` → zapisz token.
 2. **Napisz jako pierwszy** do swojego nowego bota cokolwiek (np. `/start`) —
@@ -114,34 +132,9 @@ Zapisz zwrócony klucz — potrzebny w `.env` jako `USC_UNRAID_API_KEY`.
    zainicjował czatu.
 3. Zdobądź swój `chat_id`: `curl "https://api.telegram.org/bot<TOKEN>/getUpdates"`
    po wysłaniu wiadomości do bota.
-
-## 4. Konfiguracja i start
-
-```bash
-cp .env.example .env
-```
-
-Wypełnij `.env`:
-- **Wygeneruj losowe sekrety** (nigdy nie wpisuj własnych prostych wartości):
-  ```bash
-  echo "USC_DB_PASSWORD=$(openssl rand -hex 16)"
-  echo "USC_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
-  echo "USC_INTERNAL_TOKEN=$(openssl rand -hex 24)"
-  ```
-  Wklej wyniki do `.env` (`USC_ADMIN_USER` zostaw jako `admin` albo zmień).
-- `USC_UNRAID_HOST`, `USC_UNRAID_API_KEY` — jeśli użyłeś `scripts/usc_pair.sh`
-  z kroku 2, są już wypełnione. To tylko **jednorazowy seed** przy pierwszym
-  starcie; po instalacji edytujesz je w panelu `/settings`.
-- `USC_TELEGRAM_BOT_TOKEN`/`USC_TELEGRAM_CHAT_ID` — opcjonalnie, jak wyżej.
-
-```bash
-docker compose up -d --build
-```
-
-Zaloguj się na `http://<IP_HOSTA_DOCKER>:8420/` loginem/hasłem z
-`USC_ADMIN_USER`/`USC_ADMIN_PASSWORD`. Panel `/settings` pozwala edytować
-host/klucz unRAID i dane Telegrama bez przebudowy kontenerów (kolektor
-odczytuje je z backendu co ~60s).
+4. Wpisz token i chat_id w panelu `/settings` (albo w `.env` jako
+   `USC_TELEGRAM_BOT_TOKEN`/`USC_TELEGRAM_CHAT_ID` — tylko jednorazowy seed
+   przy pierwszym starcie, potem edytuj w panelu).
 
 ## 5. Weryfikacja
 
