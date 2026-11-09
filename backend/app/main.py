@@ -23,7 +23,7 @@ from sqlalchemy import desc
 
 from app.db import (
     init_db, get_db, Incident, DiskHistory, SmartAttrHistory,
-    DockerHealthHistory, VmHealthHistory, get_all_settings, set_setting,
+    DockerHealthHistory, VmHealthHistory, LogUsageHistory, get_all_settings, set_setting,
     seed_settings_from_env,
 )
 from app import rules
@@ -182,6 +182,25 @@ def ingest_syslog(payload: dict[str, Any], db: Session = Depends(get_db), _=Depe
             found.append(inc)
         for inc in rules.rule_webgui_login(line):
             _save_incident(db, inc, raw={"line": line})
+            found.append(inc)
+    return {"incidents_found": len(found), "incidents": found}
+
+
+@app.post("/ingest/log_usage")
+def ingest_log_usage(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
+    """payload = {"used_pct": 16, "used_bytes": 20140032, "total_bytes": 134217728}
+    - zajetosc /var/log (tmpfs, zwykle 128MB na unRAID)."""
+    used_pct = payload.get("used_pct")
+    db.add(LogUsageHistory(
+        used_pct=used_pct,
+        used_bytes=payload.get("used_bytes"),
+        total_bytes=payload.get("total_bytes"),
+    ))
+    db.commit()
+    found = []
+    if used_pct is not None:
+        for inc in rules.rule_log_usage_high(used_pct):
+            _save_incident(db, inc, raw=payload)
             found.append(inc)
     return {"incidents_found": len(found), "incidents": found}
 
@@ -370,6 +389,9 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     crit_count = db.query(Incident).filter(
         Incident.status == "NEW", Incident.severity == "CRITICAL"
     ).count()
+    latest_log_usage = db.query(LogUsageHistory).order_by(desc(LogUsageHistory.recorded_at)).first()
+    log_usage_pct = latest_log_usage.used_pct if latest_log_usage else None
+    log_usage_color = "#B00020" if (log_usage_pct or 0) >= 95 else ("#F9A825" if (log_usage_pct or 0) >= 80 else "#eee")
     rows_html = ""
     cards_html = ""
     for r in rows:
@@ -436,6 +458,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     <div class="stat"><div class="num" style="color:#B00020;">{crit_count}</div><div class="label">Krytyczne (nowe)</div></div>
     <div class="stat"><div class="num">{new_count}</div><div class="label">Nowe incydenty</div></div>
     <div class="stat"><div class="num">{len(rows)}</div><div class="label">Ostatnie 200</div></div>
+    <div class="stat"><div class="num" style="color:{log_usage_color};">{log_usage_pct if log_usage_pct is not None else '?'}%</div><div class="label">Zajętość /var/log</div></div>
   </div>
   <div class="desktop-table">
     <table>

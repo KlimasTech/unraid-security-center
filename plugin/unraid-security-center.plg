@@ -3,16 +3,20 @@
 <!ENTITY name      "unraid-security-center">
 <!ENTITY displayName "unRaid Security Center Plugin">
 <!ENTITY author    "KlimasTech">
-<!ENTITY version   "2026.11.15">
+<!ENTITY version   "2026.11.16">
 <!ENTITY pkgname   "&name;-&version;.txz">
 <!ENTITY pkgdir    "/boot/config/plugins/&name;">
 <!ENTITY pkgpath   "&pkgdir;/&pkgname;">
-<!ENTITY packageMD5 "c159d21875de2a1435453fe872be7163">
+<!ENTITY packageMD5 "7812ff45cf1c491985ac8d2d09ffd834">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings" icon="logo.png">
 
 <CHANGES>
+###2026.11.16
+- Dodano skrypt usc_log_usage_dump.sh (zajetosc /var/log, tmpfs zwykle
+  128MB) i akcje "log_usage" w dyspozytorze - panel pokazuje teraz % na
+  dashboardzie, z alertem WARNING/CRITICAL powyzej progu.
 ###2026.11.15
 - Grafika (logo USC) przeniesiona z README.md na wlasciwa ikone pluginu
   (atrybut icon="logo.png" na tagu PLUGIN) - widoczna jako ikonka obok nazwy

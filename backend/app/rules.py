@@ -396,6 +396,28 @@ def rule_kernel_panic(log_line: str) -> list[dict]:
     return out
 
 
+def rule_log_usage_high(used_pct: int) -> list[dict]:
+    """Zajetosc /var/log (tmpfs, zwykle 128MB na unRAID) ponad progiem ->
+    WARNING od 80%, CRITICAL od 95%. Zapelnienie zatrzymuje logowanie i
+    moze destabilizowac uslugi zaleznie od syslog."""
+    out = []
+    if used_pct >= 95:
+        severity = "CRITICAL"
+    elif used_pct >= 80:
+        severity = "WARNING"
+    else:
+        return out
+    out.append({
+        "severity": severity,
+        "category": "log_usage",
+        "source": "/var/log",
+        "rule_id": "log_usage_high",
+        "title": f"/var/log na unRAID zajety w {used_pct}%",
+        "detail": "tmpfs /var/log zblizza sie do limitu (zwykle 128MB) - zapelnienie zatrzymuje logowanie.",
+    })
+    return out
+
+
 def rule_webgui_login(log_line: str) -> list[dict]:
     """Logowanie do WebGUI unRAID (zrodlo: 'webgui:' w syslogu) -> widoczne
     info w panelu, zamiast szumu z laczen SSH kolektora. Oba warianty (udane

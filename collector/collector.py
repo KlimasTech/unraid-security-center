@@ -519,6 +519,28 @@ def vm_poll_loop():
         time.sleep(VM_POLL_SECONDS)
 
 
+LOG_USAGE_ENABLED = os.environ.get("USC_LOG_USAGE_ENABLED", "1") == "1"
+LOG_USAGE_POLL_SECONDS = int(os.environ.get("USC_LOG_USAGE_POLL_SECONDS", "600"))
+
+
+def log_usage_poll_loop():
+    """Petla w osobnym watku: co LOG_USAGE_POLL_SECONDS sprawdza zajetosc
+    /var/log na unRAID (tmpfs, zwykle 128MB) przez dyspozytor (klucz ops -
+    dzieki ControlMaster z dyspozytorem docker_health/syslog_previous/vm
+    to zwykle juz otwarte, cieple polaczenie, bez dodatkowego sshd-spamu)."""
+    log(f"Log usage poller: start, poll co {LOG_USAGE_POLL_SECONDS}s")
+    while True:
+        try:
+            raw = run_ops_dispatch("log_usage")
+            if raw:
+                data = json.loads(raw.strip())
+                post_backend("/ingest/log_usage", data)
+                log(f"Log usage poller: cykl OK, /var/log zajety {data.get('used_pct')}%")
+        except Exception as e:  # noqa: BLE001
+            log(f"Log usage poller BLAD: {e!r}")
+        time.sleep(LOG_USAGE_POLL_SECONDS)
+
+
 def settings_refresh_loop():
     """Odswieza host/klucz unRAID z panelu co SETTINGS_REFRESH_SECONDS -
     zmiana w panelu dziala bez przebudowy kolektora (max. opoznienie =
@@ -557,6 +579,10 @@ def main():
         threading.Thread(target=vm_poll_loop, daemon=True).start()
     else:
         log("VM polling wylaczony (USC_VM_ENABLED=0)")
+    if LOG_USAGE_ENABLED:
+        threading.Thread(target=log_usage_poll_loop, daemon=True).start()
+    else:
+        log("Log usage polling wylaczony (USC_LOG_USAGE_ENABLED=0)")
     while True:
         try:
             run_once()

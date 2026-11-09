@@ -109,6 +109,19 @@ class VmHealthHistory(Base):
     state = Column(String(32), nullable=True)
 
 
+class LogUsageHistory(Base):
+    """Zajetosc /var/log na unRAID (tmpfs, zwykle 128MB) - zapelnienie
+    zatrzymuje logowanie i moze destabilizowac uslugi."""
+
+    __tablename__ = "log_usage_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recorded_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    used_pct = Column(Integer, nullable=True)
+    used_bytes = Column(Integer, nullable=True)
+    total_bytes = Column(Integer, nullable=True)
+
+
 class Setting(Base):
     """Ustawienia konfigurowalne z panelu (nie z .env) - np. host unRAID,
     klucz API, token/chat Telegram. Prostzy key-value store."""

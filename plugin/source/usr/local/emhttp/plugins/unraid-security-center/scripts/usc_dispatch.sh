@@ -21,6 +21,9 @@ case "$SSH_ORIGINAL_COMMAND" in
   vm_log_tail)
     exec /bin/bash "$DIR/usc_vm_log_tail.sh"
     ;;
+  log_usage)
+    exec /bin/bash "$DIR/usc_log_usage_dump.sh"
+    ;;
   unpair)
     # Rozlaczenie z panelu USC: usuwa WSZYSTKIE 3 wpisy USC z
     # authorized_keys (oznaczone komentarzem "# USC-managed" przy
