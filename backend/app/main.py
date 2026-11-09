@@ -509,25 +509,24 @@ def settings_save(
 
 
 @app.get("/wizard", response_class=HTMLResponse)
-def wizard_page(_=Depends(verify_admin)):
-    html = f"""<!DOCTYPE html>
-<html lang="pl"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>USC - Połącz z unRAID</title>
-<style>
-{_PAGE_STYLE}
-  form {{ background:#1a1a1d; border-radius:8px; padding:20px; max-width:480px; }}
-  label {{ display:block; font-size:12px; color:#999; text-transform:uppercase; margin:16px 0 6px; }}
-  label:first-of-type {{ margin-top:0; }}
-  input {{ width:100%; padding:10px 12px; border-radius:6px; border:1px solid #333; background:#111; color:#eee; font-size:14px; }}
-  .hint {{ color:#666; font-size:12px; margin-top:4px; }}
-  button {{ margin-top:20px; padding:10px 20px; border-radius:6px; border:none; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
-  button:disabled {{ background:#444; cursor:wait; }}
-</style></head>
-<body>
-  <h1>🛡️ unRaid Security Center (USC)</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    s = get_all_settings(db)
+    connected = bool(s.get("unraid_host") and s.get("unraid_api_key"))
+
+    if connected:
+        body = f"""
+  <div class="banner ok">Połączono z unRAID — IP: {s.get('unraid_host')}</div>
+  <p style="color:#999; font-size:13px; max-width:480px;">
+    Klucze SSH i klucz API są aktywne, kolektor zbiera dane. Rozłączenie
+    usuwa tylko wpisy z panelu (host/klucz API) — klucze SSH w
+    <code>authorized_keys</code> na unRAID zostają, więc możesz się
+    połączyć ponownie bez ponownego wpisywania hasła roota.
+  </p>
+  <form method="POST" action="/wizard/disconnect" onsubmit="return confirm('Rozłączyć USC od unRAID {s.get('unraid_host')}?');">
+    <button type="submit" class="danger">Rozłącz</button>
+  </form>"""
+    else:
+        body = """
   <p style="color:#999; font-size:13px; max-width:480px;">
     Wklej IP unRAID i hasło roota. Hasło jest użyte TYLKO jednorazowo, przez to
     jedno połączenie SSH - nigdzie nie jest zapisywane. USC sam wygeneruje
@@ -543,7 +542,30 @@ def wizard_page(_=Depends(verify_admin)):
     <div class="hint">Używane tylko teraz, nigdy nie jest zapisywane.</div>
 
     <button type="submit">Połącz</button>
-  </form>
+  </form>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>USC - Połącz z unRAID</title>
+<style>
+{_PAGE_STYLE}
+  form {{ background:#1a1a1d; border-radius:8px; padding:20px; max-width:480px; }}
+  label {{ display:block; font-size:12px; color:#999; text-transform:uppercase; margin:16px 0 6px; }}
+  label:first-of-type {{ margin-top:0; }}
+  input {{ width:100%; padding:10px 12px; border-radius:6px; border:1px solid #333; background:#111; color:#eee; font-size:14px; }}
+  .hint {{ color:#666; font-size:12px; margin-top:4px; }}
+  button {{ margin-top:0; padding:10px 20px; border-radius:6px; border:none; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
+  button:disabled {{ background:#444; cursor:wait; }}
+  button.danger {{ background:#B00020; }}
+  .banner {{ padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:14px; max-width:480px; }}
+  .banner.ok {{ background:#1b3a1b; color:#9fdc9f; }}
+</style></head>
+<body>
+  <h1>🛡️ unRaid Security Center (USC)</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  {body}
 </body></html>"""
     return html
 
@@ -604,3 +626,10 @@ def wizard_connect(
   <p style="margin-top:20px;"><a href="/settings">← Wróć do ustawień</a></p>
 </body></html>"""
     return html
+
+
+@app.post("/wizard/disconnect")
+def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    set_setting(db, "unraid_host", "")
+    set_setting(db, "unraid_api_key", "")
+    return RedirectResponse(url="/wizard", status_code=303)
