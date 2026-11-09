@@ -44,8 +44,9 @@ def send_incident_alert(incident: dict, bot_token: str | None, chat_id: str | No
     emoji = _SEVERITY_EMOJI.get(severity, "")
     text = (
         f"{emoji} {severity} - unRaid Security Center\n\n"
-        f"{incident.get('title', '')}\n"
-        f"Kategoria: {incident.get('category', '-')}  *  Zrodlo: {incident.get('source', '-')}\n\n"
+        f"{incident.get('title', '')}\n\n"
+        f"Kategoria: {incident.get('category', '-')}\n"
+        f"Źródło: {incident.get('source', '-')}\n"
         f"{incident.get('detail', '')}"
     )
     body = json.dumps({
