@@ -19,6 +19,12 @@ _SEVERITY_EMOJI = {
 # Tylko te poziomy faktycznie wysylaja powiadomienie (INFO jest zbyt szumne)
 _NOTIFY_SEVERITIES = {"WARNING", "ERROR", "CRITICAL"}
 
+# Wyjatki: te rule_id ZAWSZE powiadamiaja Telegram, niezaleznie od severity -
+# logowania do WebGUI (udane i nieudane) sa realnym sygnalem bezpieczenstwa
+# wartym zobaczenia na biezaco, mimo ze udane logowanie samo w sobie jest
+# INFO (zeby nie zawyzac licznika "Nowe incydenty" na dashboardzie).
+_ALWAYS_NOTIFY_RULE_IDS = {"webgui_login_success", "webgui_login_failed"}
+
 
 def send_incident_alert(incident: dict, bot_token: str | None, chat_id: str | None) -> bool:
     """incident = {"severity", "category", "source", "title", "detail"}. Zwraca True gdy wyslano.
@@ -29,7 +35,8 @@ def send_incident_alert(incident: dict, bot_token: str | None, chat_id: str | No
     co powodowalo CICHE gubienie alertow. Niezawodnosc > ladne formatowanie.
     """
     severity = incident.get("severity", "INFO")
-    if severity not in _NOTIFY_SEVERITIES:
+    rule_id = incident.get("rule_id", "")
+    if severity not in _NOTIFY_SEVERITIES and rule_id not in _ALWAYS_NOTIFY_RULE_IDS:
         return False
     if not bot_token or not chat_id:
         return False

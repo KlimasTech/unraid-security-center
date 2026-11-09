@@ -380,9 +380,14 @@ def rule_kernel_panic(log_line: str) -> list[dict]:
 
 def rule_webgui_login(log_line: str) -> list[dict]:
     """Logowanie do WebGUI unRAID (zrodlo: 'webgui:' w syslogu) -> widoczne
-    info w panelu, zamiast szumu z laczen SSH kolektora. Udane logowanie
-    = INFO (nie powiadamia Telegram, tylko widoczne w dashboardzie).
-    Nieudane logowanie = WARNING (powiadamia - realny sygnal bezpieczenstwa).
+    info w panelu, zamiast szumu z laczen SSH kolektora. Oba warianty (udane
+    i nieudane) wysylaja alert Telegram (patrz telegram.py - jawna lista
+    rule_id, nie standardowy filtr po severity).
+
+    Dokladne stringi logowane przez /usr/local/emhttp/plugins/dynamix/
+    include/.login.php: "Successful login user X from Y" i "Unsuccessful
+    login user X from Y. [opcjonalny tekst o blokadzie]" - NIE "Failed
+    login", latwo zgadnac zle bez sprawdzenia realnego zrodla PHP.
     """
     out = []
     if "webgui:" not in log_line:
@@ -397,7 +402,7 @@ def rule_webgui_login(log_line: str) -> list[dict]:
             "title": f"Logowanie do WebGUI: {detail}",
             "detail": f"Linia logu: {log_line[:500]}",
         })
-    elif "Failed login" in log_line or "failed login" in log_line.lower():
+    elif "Unsuccessful login" in log_line:
         detail = log_line.split("webgui:", 1)[1].strip()
         out.append({
             "severity": "WARNING",
