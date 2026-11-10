@@ -629,6 +629,81 @@ def internal_settings(db: Session = Depends(get_db), _=Depends(verify_internal))
     }
 
 
+_SPINNER_PAGE_STYLE = """
+  * { box-sizing: border-box; }
+  body { background:#0d0d0f; color:#eee; font-family: -apple-system, Segoe UI, sans-serif; margin:0; }
+  .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:80vh; gap:18px; }
+  .gear { width:64px; height:64px; animation: spin 2.2s linear infinite; }
+  .gear2 { width:40px; height:40px; animation: spinrev 1.6s linear infinite; margin-left:-10px; opacity:.7; }
+  .gears { display:flex; align-items:center; }
+  .msg { font-size:15px; color:#ccc; text-align:center; max-width:420px; line-height:1.5; }
+  .sub { color:#666; font-size:12px; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes spinrev { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+"""
+
+# Zabawka SVG: dwie zazebiajace sie zebatki (kręcą się w przeciwnych kierunkach)
+_SPINNER_GEARS_SVG = """
+<svg class="gear" viewBox="0 0 24 24" fill="none">
+  <path fill="#4a9eff" d="M12 8a4 4 0 100 8 4 4 0 000-8zm9.4 5c.04-.33.06-.66.06-1s-.02-.67-.06-1l2.1-1.65a.5.5 0 00.12-.64l-2-3.46a.5.5 0 00-.61-.22l-2.49 1a7.3 7.3 0 00-1.73-1l-.38-2.65A.5.5 0 0015.9 2h-4a.5.5 0 00-.5.42l-.38 2.65c-.62.26-1.2.6-1.73 1l-2.49-1a.5.5 0 00-.61.22l-2 3.46a.5.5 0 00.12.64L6.4 11c-.04.33-.06.66-.06 1s.02.67.06 1l-2.1 1.65a.5.5 0 00-.12.64l2 3.46c.13.22.39.31.61.22l2.49-1c.53.4 1.11.74 1.73 1l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.62-.26 1.2-.6 1.73-1l2.49 1c.22.09.48 0 .61-.22l2-3.46a.5.5 0 00-.12-.64L21.4 13zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/>
+</svg>
+"""
+
+_LOADING_HEAD = """<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{logo}
+<title>{title}</title>
+<style>{style}</style>
+</head>"""
+
+
+def _loading_page(target_url: str, message: str, title: str) -> HTMLResponse:
+    """Strona posrednia z krzecaca zabatka: widoczna Dopoki przegladarka
+    czeka na wolny endpoint (generowanie diagnozy/raportu na darmowych
+    modelach potrafi trwac kilkanascie-kilkadziesiat sekund - bez tej
+    strony wyglada, ze nic sie nie dzieje).
+    Stara strona pozostaje wyrenderowana az do pierwszego bajta odpowiedzi,
+    wiec meta-refresh + JS redirect na wolny URL daje efekt 'kółko while
+    loading' bez ajaxu."""
+    html = f"""{_LOADING_HEAD.format(logo=_LOGO_HEAD, title=title, style=_SPINNER_PAGE_STYLE)}
+<body>
+  <div class="wrap">
+    <div class="gears">
+      {_SPINNER_GEARS_SVG}
+      <svg class="gear2" viewBox="0 0 24 24" fill="none">
+        <path fill="#4a9eff" d="M12 8a4 4 0 100 8 4 4 0 000-8zm9.4 5c.04-.33.06-.66.06-1s-.02-.67-.06-1l2.1-1.65a.5.5 0 00.12-.64l-2-3.46a.5.5 0 00-.61-.22l-2.49 1a7.3 7.3 0 00-1.73-1l-.38-2.65A.5.5 0 0015.9 2h-4a.5.5 0 00-.5.42l-.38 2.65c-.62.26-1.2.6-1.73 1l-2.49-1a.5.5 0 00-.61.22l-2 3.46a.5.5 0 00.12.64L6.4 11c-.04.33-.06.66-.06 1s.02.67.06 1l-2.1 1.65a.5.5 0 00-.12.64l2 3.46c.13.22.39.31.61.22l2.49-1c.53.4 1.11.74 1.73 1l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.62-.26 1.2-.6 1.73-1l2.49 1c.22.09.48 0 .61-.22l2-3.46a.5.5 0 00-.12-.64L21.4 13zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/>
+      </svg>
+    </div>
+    <div class="msg">{message}</div>
+    <div class="sub">Darmowe modele potrafią odpowiadać kilkadziesiąt sekund — strona przełączy się sama.</div>
+    <div class="sub"><a href="{target_url}" style="color:#4a9eff;">Przejdź teraz</a></div>
+  </div>
+  <meta http-equiv="refresh" content="1; url={target_url}">
+  <script>setTimeout(function() {{ window.location.replace("{target_url}"); }}, 800);</script>
+</body></html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/advise/{incident_id}/loading", response_class=HTMLResponse)
+def advise_loading(incident_id: int, _=Depends(verify_admin)):
+    return _loading_page(
+        f"/advise/{incident_id}",
+        "⚙️ Analizuję incydent modelem AI —<br>zbieram kontekst (SMART, powiązane incydenty, syslog)...",
+        "USC - Diagnoza AI (ładowanie)",
+    )
+
+
+@app.get("/report/weekly/loading", response_class=HTMLResponse)
+def weekly_loading(_=Depends(verify_admin)):
+    return _loading_page(
+        "/report/weekly/view",
+        "⚙️ Generuję raport tygodnia —<br>analizuję incydenty i trendy z 7 dni...",
+        "USC - Raport tygodnia (ładowanie)",
+    )
+
+
 @app.get("/advise/{incident_id}", response_class=HTMLResponse)
 def advise_page(incident_id: int, db: Session = Depends(get_db), _=Depends(verify_admin)):
     """Strona diagnozy AI dla incydentu. Klikniecie linku na dashboardzie =
@@ -716,7 +791,7 @@ def advise_page(incident_id: int, db: Session = Depends(get_db), _=Depends(verif
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   {body_html}
 </body></html>"""
     return html
@@ -770,7 +845,7 @@ def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   {body}
 </body></html>"""
     return html
@@ -942,7 +1017,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
           <td style="padding:6px 10px;"><span style="background:{color}; color:#fff; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600;">{r.severity}</span></td>
           <td style="padding:6px 10px; color:#aaa;">{r.category}</td>
           <td style="padding:6px 10px; color:#aaa;">{r.source or '-'}</td>
-          <td style="padding:6px 10px;">{r.title} <a class="ai-link" href="/advise/{r.id}">🤖 Diagnoza AI</a></td>
+          <td style="padding:6px 10px;">{r.title} <a class="ai-link" href="/advise/{r.id}/loading">🤖 Diagnoza AI</a></td>
           <td style="padding:6px 10px; color:#777; font-size:12px;">{r.status}</td>
         </tr>"""
         cards_html += f"""
@@ -952,7 +1027,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
             <span class="card-status">{r.status}</span>
           </div>
           <div class="card-title">{r.title}</div>
-          <div class="card-meta">{r.category} &middot; {r.source or '-'} &middot; <a class="ai-link" href="/advise/{r.id}">🤖 Diagnoza AI</a></div>
+          <div class="card-meta">{r.category} &middot; {r.source or '-'} &middot; <a class="ai-link" href="/advise/{r.id}/loading">🤖 Diagnoza AI</a></div>
           <div class="card-time">{ts}</div>
         </div>"""
     empty_msg = '<tr><td colspan="6" style="padding:20px; text-align:center; color:#666;">Brak incydentów — wszystko OK</td></tr>'
@@ -998,7 +1073,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   <div class="sub">Odświeża się co 30s</div>
   <div class="stats">
     <div class="stat"><div class="num" style="color:#B00020;">{crit_count}</div><div class="label">Krytyczne (nowe)</div></div>
@@ -1056,7 +1131,7 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   {banner}
   <form method="POST" action="/settings">
     <label>Host unRAID (IP)</label>
@@ -1172,7 +1247,7 @@ def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   {body}
 </body></html>"""
     return html
@@ -1229,7 +1304,7 @@ def wizard_connect(
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   {banner}
   {steps_html}
   <p style="margin-top:20px;"><a href="/settings">← Wróć do ustawień</a></p>
@@ -1269,7 +1344,7 @@ def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
   <div class="banner ok">Rozłączono od {host or 'unRAID'}. Posprzątano wpisy w authorized_keys, klucz API i lokalne pliki kluczy.</div>
   {steps_html}
   <p style="margin-top:20px;"><a href="/wizard">← Wróć do parowania</a></p>
