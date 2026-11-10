@@ -1134,26 +1134,6 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     mem_used_pct = latest_mem.used_pct if latest_mem else None
     mem_color = "#B00020" if (mem_used_pct or 0) >= 95 else ("#F9A825" if (mem_used_pct or 0) >= 90 else "#eee")
 
-    # --- RAM hosta (24h) - jedyny trend na dashboardzie; S.M.A.R.T ma
-    # wlasna zakladke /smart (trendy per dysk tam) ---
-    ram_trends_html = ""
-    day_ago_mem = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
-    mem_hist = (
-        db.query(MemoryUsageHistory)
-        .filter(MemoryUsageHistory.recorded_at >= day_ago_mem)
-        .order_by(MemoryUsageHistory.recorded_at)
-        .all()
-    )
-    if mem_hist:
-        ram_trends_html = (
-            '<div class="trend-row">'
-            '<div class="trend-dev">RAM hosta</div>'
-            '<div class="trend-cell"><div class="trend-label">Zajętość RAM (24h)</div>' + _sparkline([m.used_pct for m in mem_hist]) + '</div>'
-            '<div class="trend-flag" style="color:' + mem_color + ';">' + ('&#9888; > 90%' if (mem_used_pct or 0) > 90 else '') + '</div>'
-            '</div>'
-        )
-    else:
-        ram_trends_html = '<div style="color:#666;font-size:13px;">Brak danych o RAM (poller jeszcze nie zebrał historii)</div>'
     rows_html = ""
     cards_html = ""
     for r in rows:
@@ -1193,13 +1173,6 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
   .stat {{ background:#1a1a1d; border-radius:8px; padding:16px 24px; flex:1 1 140px; }}
   .stat .num {{ font-size:28px; font-weight:700; }}
   .stat .label {{ color:#888; font-size:12px; text-transform:uppercase; }}
-  .trends {{ background:#1a1a1d; border-radius:8px; padding:14px 16px; margin-bottom:24px; }}
-  .trend-row {{ display:flex; align-items:center; gap:18px; padding:8px 0; border-bottom:1px solid #26262a; flex-wrap:wrap; }}
-  .trend-row:last-child {{ border-bottom:none; }}
-  .trend-dev {{ font-weight:600; min-width:90px; }}
-  .trend-cell {{ flex:0 1 auto; }}
-  .trend-label {{ color:#888; font-size:11px; text-transform:uppercase; margin-bottom:2px; }}
-  .trend-flag {{ font-size:12px; font-weight:600; margin-left:auto; }}
   table {{ width:100%; border-collapse:collapse; background:#1a1a1d; border-radius:8px; overflow:hidden; table-layout:fixed; }}
   th {{ text-align:left; padding:8px 10px; background:#222; color:#999; font-size:12px; text-transform:uppercase; }}
   td {{ word-break:break-word; }}
@@ -1230,10 +1203,6 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     <div class="stat"><div class="num" style="color:{log_usage_color};">{log_usage_pct if log_usage_pct is not None else '?'}%</div><div class="label">Zajętość /var/log</div></div>
     <div class="stat"><div class="num" style="color:{docker_log_usage_color};">{docker_log_usage_pct if docker_log_usage_pct is not None else '?'}%</div><div class="label">Zajętość logów Docker</div></div>
     <div class="stat"><div class="num" style="color:{mem_color};">{mem_used_pct if mem_used_pct is not None else '?'}%</div><div class="label">RAM hosta unRAID</div></div>
-  </div>
-  <h2 style="font-size:15px;margin:8px 0 10px;">RAM hosta (24h) &middot; <a href="/smart" style="font-size:13px;color:#4a9eff;">trendy S.M.A.R.T &rarr;</a></h2>
-  <div class="trends">
-    {ram_trends_html}
   </div>
   <div class="desktop-table">
     <table>
