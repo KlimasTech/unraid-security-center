@@ -791,7 +791,7 @@ def advise_page(incident_id: int, db: Session = Depends(get_db), _=Depends(verif
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/advise")}
   {body_html}
 </body></html>"""
     return html
@@ -845,7 +845,7 @@ def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/report")}
   {body}
 </body></html>"""
     return html
@@ -898,6 +898,25 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_db), _=Depends(
     return {"id": row.id, "status": row.status}
 
 
+
+_NAV_ITEMS = [
+    ("/", "Dashboard", "\U0001F4CA"),
+    ("/settings", "Ustawienia", "\u2699\uFE0F"),
+    ("/wizard", "Po\u0142\u0105cz z unRAID", "\U0001F517"),
+    ("/report/weekly/loading", "Raport tygodnia", "\U0001F5D3\uFE0F"),
+]
+
+
+def _nav(active: str) -> str:
+    """Pasek menu jako estetyczne przyciski (pigu\u0142ki z ikonami); aktywna
+    strona pod\u015bwietlona na niebiesko. Wsp\u00f3lny dla wszystkich stron zamiast
+    siedmiu kopii markupu, ktore zaczely rozjezdzac sie stylyem."""
+    links = ""
+    for href, label, icon in _NAV_ITEMS:
+        cls = ' class="active"' if href == active else ""
+        links += f'<a{cls} href="{href}"><span>{icon}</span>{label}</a>'
+    return f'<div class="nav">{links}</div>'
+
 _SEVERITY_COLOR = {
     "CRITICAL": "#B00020", "ERROR": "#E65100", "WARNING": "#F9A825", "INFO": "#1565C0",
 }
@@ -908,8 +927,15 @@ _PAGE_STYLE = """
   h1 { font-size:20px; margin-bottom:4px; }
   .sub { color:#777; font-size:13px; margin-bottom:20px; }
   a { color:#4a9eff; text-decoration:none; }
-  .nav { margin-bottom:20px; font-size:13px; }
-  .nav a { margin-right:16px; }
+  .nav { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:24px; }
+  .nav a {
+    display:inline-flex; align-items:center; gap:7px;
+    padding:9px 16px; border-radius:10px; font-size:13px; font-weight:500;
+    color:#ccc; background:#1a1a1d; border:1px solid #2a2a2e;
+    transition: background .15s, border-color .15s, color .15s, transform .1s;
+  }
+  .nav a:hover { background:#222226; border-color:#2a6ef0; color:#fff; transform:translateY(-1px); }
+  .nav a.active { background:#2a6ef0; border-color:#2a6ef0; color:#fff; font-weight:600; }
   .ai-link { font-size:12px; margin-left:8px; white-space:nowrap; }
 """
 
@@ -1073,7 +1099,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/")}
   <div class="sub">Odświeża się co 30s</div>
   <div class="stats">
     <div class="stat"><div class="num" style="color:#B00020;">{crit_count}</div><div class="label">Krytyczne (nowe)</div></div>
@@ -1131,7 +1157,7 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/settings")}
   {banner}
   <form method="POST" action="/settings">
     <label>Host unRAID (IP)</label>
@@ -1247,7 +1273,7 @@ def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/wizard")}
   {body}
 </body></html>"""
     return html
@@ -1304,7 +1330,7 @@ def wizard_connect(
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/wizard")}
   {banner}
   {steps_html}
   <p style="margin-top:20px;"><a href="/settings">← Wróć do ustawień</a></p>
@@ -1344,7 +1370,7 @@ def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/loading">Raport tygodnia</a></div>
+  {_nav("/wizard")}
   <div class="banner ok">Rozłączono od {host or 'unRAID'}. Posprzątano wpisy w authorized_keys, klucz API i lokalne pliki kluczy.</div>
   {steps_html}
   <p style="margin-top:20px;"><a href="/wizard">← Wróć do parowania</a></p>
