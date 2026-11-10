@@ -952,6 +952,7 @@ def resolve_incident(incident_id: int, db: Session = Depends(get_db), _=Depends(
 
 _NAV_ITEMS = [
     ("/", "Dashboard", "\U0001F4CA"),
+    ("/smart", "S.M.A.R.T", "\U0001F5A4\uFE0F"),
     ("/settings", "Ustawienia", "\u2699\uFE0F"),
     ("/wizard", "Po\u0142\u0105cz z unRAID", "\U0001F517"),
     ("/report/weekly/loading", "Raport tygodnia", "\U0001F5D3\uFE0F"),
@@ -991,6 +992,129 @@ _PAGE_STYLE = """
 """
 
 
+
+def _sparkline(values: list[int | None], width: int = 220, height: int = 36) -> str:
+    """Sparkline SVG (serwerowo, zero JS/CDN). None przerywa linie; ostatnia
+    wartosc przy gornym skali zakresu -> pomaranczowy."""
+    pts = [v for v in values if v is not None]
+    if len(pts) < 2:
+        return '<span style="color:#555;font-size:12px;">za mało danych</span>'
+    lo, hi = min(pts), max(pts)
+    span = (hi - lo) or 1
+    n = len(values)
+    d_parts = []
+    prev_v = None
+    for i, v in enumerate(values):
+        x = 2 + i * (width - 4) / max(n - 1, 1)
+        if v is None:
+            prev_v = None
+            continue
+        y = height - 4 - (v - lo) * (height - 8) / span
+        d_parts.append(("M" if prev_v is None else "L") + f"{x:.0f} {y:.0f}")
+        prev_v = v
+    color = "#888"
+    if pts[-1] is not None and pts[-1] > 0 and lo >= 0 and lo + (hi - lo) * 0.8 <= pts[-1]:
+        color = "#F9A825"
+    d_attr = "".join(d_parts)
+    return (
+        '<svg width="' + str(width) + '" height="' + str(height) + '" style="vertical-align:middle;">'
+        '<path d="' + d_attr + '" fill="none" stroke="' + color + '" stroke-width="1.5"/></svg>'
+        '<span style="color:#999;font-size:11px;margin-left:6px;">' + str(pts[-1]) + '&nbsp;(min ' + str(lo) + ', max ' + str(hi) + ')</span>'
+    )
+
+
+_TRENDS_CSS = """
+  .trends { background:#1a1a1d; border-radius:8px; padding:14px 16px; margin-bottom:24px; }
+  .trend-row { display:flex; align-items:center; gap:18px; padding:8px 0; border-bottom:1px solid #26262a; flex-wrap:wrap; }
+  .trend-row:last-child { border-bottom:none; }
+  .trend-dev { font-weight:600; min-width:90px; }
+  .trend-cell { flex:0 1 auto; }
+  .trend-label { color:#888; font-size:11px; text-transform:uppercase; margin-bottom:2px; }
+  .trend-flag { font-size:12px; font-weight:600; margin-left:auto; }
+  .trend-last { color:#666; font-size:11px; margin-top:4px; }
+"""
+
+
+def _smart_trends_html(db: Session) -> str:
+    """Wiersze trendow SMART per dysk (7 dni) dla zakladki /smart.
+    NVMe (brak klasycznych atrybutow ATA 197/199) dostaje media_errors
+    i critical_warning zamiast pustych komorek."""
+    week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+    smart_devices = [r[0] for r in db.query(SmartAttrHistory.device).distinct().all()]
+    rows = ""
+    for device in sorted(d or "" for d in smart_devices):
+        hist = (
+            db.query(SmartAttrHistory)
+            .filter(SmartAttrHistory.device == device, SmartAttrHistory.recorded_at >= week_ago)
+            .order_by(SmartAttrHistory.recorded_at)
+            .all()
+        )
+        if not hist:
+            continue
+        temps = [h.temperature for h in hist]
+        a197 = [h.attr_197 for h in hist]
+        a199 = [h.attr_199 for h in hist]
+        nvme_me = [h.nvme_media_errors for h in hist]
+        nvme_cw = [h.nvme_critical_warning for h in hist]
+        has_ata = any(v is not None for v in a197 + a199)
+        flag_197 = a197 and any(v and v > 0 for v in a197)
+        flag_nvm = nvme_cw and any(v and v > 0 for v in nvme_cw)
+        trend_color = "#B00020" if (flag_197 or flag_nvm) else "#eee"
+        middle = ""
+        if has_ata:
+            middle = (
+                '<div class="trend-cell"><div class="trend-label">SMART 197 (pending)</div>' + _sparkline(a197) + '</div>'
+                '<div class="trend-cell"><div class="trend-label">SMART 199 (UDMA CRC)</div>' + _sparkline(a199) + '</div>'
+            )
+        elif any(v is not None for v in nvme_me + nvme_cw):
+            middle = (
+                '<div class="trend-cell"><div class="trend-label">NVMe media errors</div>' + _sparkline(nvme_me) + '</div>'
+                '<div class="trend-cell"><div class="trend-label">NVMe critical warning</div>' + _sparkline(nvme_cw) + '</div>'
+            )
+        flag_text = "&#9888; 197 > 0" if flag_197 else ("&#9888; critical warning" if flag_nvm else "")
+        last_ts = hist[-1].recorded_at.strftime("%Y-%m-%d %H:%M") if hist else "?"
+        rows += (
+            '<div class="trend-row">'
+            '<div class="trend-dev">' + device + '</div>'
+            '<div class="trend-cell"><div class="trend-label">Temperatura</div>' + _sparkline(temps) + '</div>'
+            + middle +
+            '<div class="trend-flag" style="color:' + trend_color + ';">' + flag_text + '</div>'
+            '<div class="trend-last">ostatni odczyt: ' + last_ts + ' UTC</div>'
+            '</div>'
+        )
+    if not rows:
+        rows = '<div style="color:#666;font-size:13px;">Brak danych SMART (kolektor jeszcze nie zebrał historii)</div>'
+    return rows
+
+
+@app.get("/smart", response_class=HTMLResponse)
+def smart_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    """Zakladka S.M.A.R.T: trendy atrybutow per dysk (7 dni, sparkline)."""
+    trends = _smart_trends_html(db)
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
+<title>USC - S.M.A.R.T</title>
+<meta http-equiv="refresh" content="60">
+<style>
+{_PAGE_STYLE}
+{_TRENDS_CSS}
+  h2.sect {{ margin:8px 0 10px; font-size:15px; display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }}
+  h2.sect .sub {{ font-size:12px; color:#666; font-weight:400; }}
+</style></head>
+<body>
+  <h1>{_LOGO_H1}</h1>
+  {_nav("/smart")}
+  <h2 class="sect">Trendy S.M.A.R.T <span class="sub">7 dni &middot; odświeżanie 60s &middot; ATA: 197/199 &middot; NVMe: media errors / critical warning</span></h2>
+  <div class="trends">
+    {trends}
+  </div>
+</body></html>"""
+    return html
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     rows = db.query(Incident).order_by(desc(Incident.created_at)).limit(200).all()
@@ -1010,63 +1134,9 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     mem_used_pct = latest_mem.used_pct if latest_mem else None
     mem_color = "#B00020" if (mem_used_pct or 0) >= 95 else ("#F9A825" if (mem_used_pct or 0) >= 90 else "#eee")
 
-    # --- Faza 2: trendy SMART (7 dni) - sparkline SVG per dysk ---
-    def _sparkline(values: list[int | None], width: int = 220, height: int = 36) -> str:
-        """Minimalistyczny sparkline SVG (rysowany serwerowo, zero JS/CDN).
-        None (brak odczytu) przerywa linie; ostatnia wartosc przy gornym skali zakresu -> pomaranczowy."""
-        pts = [v for v in values if v is not None]
-        if len(pts) < 2:
-            return '<span style="color:#555;font-size:12px;">za mało danych</span>'
-        lo, hi = min(pts), max(pts)
-        span = (hi - lo) or 1
-        n = len(values)
-        d_parts = []
-        prev_v = None
-        for i, v in enumerate(values):
-            x = 2 + i * (width - 4) / max(n - 1, 1)
-            if v is None:
-                prev_v = None
-                continue
-            y = height - 4 - (v - lo) * (height - 8) / span
-            d_parts.append(("M" if prev_v is None else "L") + f"{x:.0f} {y:.0f}")
-            prev_v = v
-        color = "#888"
-        if pts[-1] is not None and pts[-1] > 0 and lo >= 0 and lo + (hi - lo) * 0.8 <= pts[-1]:
-            color = "#F9A825"
-        d_attr = "".join(d_parts)
-        return (
-            '<svg width="' + str(width) + '" height="' + str(height) + '" style="vertical-align:middle;">'
-            '<path d="' + d_attr + '" fill="none" stroke="' + color + '" stroke-width="1.5"/></svg>'
-            '<span style="color:#999;font-size:11px;margin-left:6px;">' + str(pts[-1]) + '&nbsp;(min ' + str(lo) + ', max ' + str(hi) + ')</span>'
-        )
-
-    week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
-    smart_devices = [
-        r[0] for r in db.query(SmartAttrHistory.device).distinct().all()
-    ]
-    trends_html = ""
-    for device in sorted(d or "" for d in smart_devices):
-        hist = (
-            db.query(SmartAttrHistory)
-            .filter(SmartAttrHistory.device == device, SmartAttrHistory.recorded_at >= week_ago)
-            .order_by(SmartAttrHistory.recorded_at)
-            .all()
-        )
-        if not hist:
-            continue
-        temps = [h.temperature for h in hist]
-        a197 = [h.attr_197 for h in hist]
-        a199 = [h.attr_199 for h in hist]
-        trend_color = "#B00020" if (a197 and any(v and v > 0 for v in a197)) else "#eee"
-        trends_html += f"""
-        <div class="trend-row">
-          <div class="trend-dev">{device}</div>
-          <div class="trend-cell"><div class="trend-label">Temperatura</div>{_sparkline(temps)}</div>
-          <div class="trend-cell"><div class="trend-label">SMART 197 (pending)</div>{_sparkline(a197)}</div>
-          <div class="trend-cell"><div class="trend-label">SMART 199 (UDMA CRC)</div>{_sparkline(a199)}</div>
-          <div class="trend-flag" style="color:{trend_color};">{'&#9888; 197 > 0' if (a197 and any(v and v > 0 for v in a197)) else ''}</div>
-        </div>"""
-    # --- Faza 2: trend RAM hosta (24h) w tej samej sekcji ---
+    # --- RAM hosta (24h) - jedyny trend na dashboardzie; S.M.A.R.T ma
+    # wlasna zakladke /smart (trendy per dysk tam) ---
+    ram_trends_html = ""
     day_ago_mem = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
     mem_hist = (
         db.query(MemoryUsageHistory)
@@ -1075,14 +1145,15 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
         .all()
     )
     if mem_hist:
-        trends_html += f"""
-        <div class="trend-row">
-          <div class="trend-dev">RAM hosta</div>
-          <div class="trend-cell"><div class="trend-label">Zajętość RAM (24h)</div>{_sparkline([m.used_pct for m in mem_hist])}</div>
-          <div class="trend-flag" style="color:{mem_color};">{'&#9888; > 90%' if (mem_used_pct or 0) > 90 else ''}</div>
-        </div>"""
-    if not trends_html:
-        trends_html = '<div style="color:#666;font-size:13px;">Brak danych SMART (kolektor jeszcze nie zebrał historii)</div>'
+        ram_trends_html = (
+            '<div class="trend-row">'
+            '<div class="trend-dev">RAM hosta</div>'
+            '<div class="trend-cell"><div class="trend-label">Zajętość RAM (24h)</div>' + _sparkline([m.used_pct for m in mem_hist]) + '</div>'
+            '<div class="trend-flag" style="color:' + mem_color + ';">' + ('&#9888; > 90%' if (mem_used_pct or 0) > 90 else '') + '</div>'
+            '</div>'
+        )
+    else:
+        ram_trends_html = '<div style="color:#666;font-size:13px;">Brak danych o RAM (poller jeszcze nie zebrał historii)</div>'
     rows_html = ""
     cards_html = ""
     for r in rows:
@@ -1160,9 +1231,9 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     <div class="stat"><div class="num" style="color:{docker_log_usage_color};">{docker_log_usage_pct if docker_log_usage_pct is not None else '?'}%</div><div class="label">Zajętość logów Docker</div></div>
     <div class="stat"><div class="num" style="color:{mem_color};">{mem_used_pct if mem_used_pct is not None else '?'}%</div><div class="label">RAM hosta unRAID</div></div>
   </div>
-  <h2 style="font-size:15px;margin:8px 0 10px;">Trendy SMART (7 dni)</h2>
+  <h2 style="font-size:15px;margin:8px 0 10px;">RAM hosta (24h) &middot; <a href="/smart" style="font-size:13px;color:#4a9eff;">trendy S.M.A.R.T &rarr;</a></h2>
   <div class="trends">
-    {trends_html}
+    {ram_trends_html}
   </div>
   <div class="desktop-table">
     <table>
