@@ -544,9 +544,35 @@ def advise_incident_endpoint(
 
 
 @app.post("/report/weekly")
-def weekly_report_endpoint(send_telegram: int = 0, db: Session = Depends(get_db), _=Depends(verify_admin)):
+def weekly_report_endpoint(
+    send_telegram: int = 0, force: int = 0,
+    db: Session = Depends(get_db), _=Depends(verify_admin),
+):
     """Raport stanu AI za ostatnie 7 dni (incydenty + trendy). Opcjonalnie
-    wysylka na Telegram (send_telegram=1)."""
+    wysylka na Telegram (send_telegram=1).
+
+    Cache: najnowszy UDANY raport z tabeli advisories jest serwowany
+    ponownie zamiast generowac za kazdym wejsciem na strone (darmowy
+    model = dziesiatki sekund czekania). Waznosc cache: 24h - starszy
+    raport tygodnia i tak opisuje nieaktualne dane, wiec po dobie
+    generuje sie nowy przy wejsciu. force=1 (przycisk 'Generuj nowy')
+    pomija cache i tworzy swiezy raport od razu."""
+    cache_fresh_hours = 24
+    if not force:
+        cached_row = (
+            db.query(Advisory)
+            .filter(Advisory.kind == "weekly_report", Advisory.result_json.isnot(None))
+            .order_by(desc(Advisory.created_at))
+            .first()
+        )
+        if cached_row:
+            age_hours = (datetime.datetime.utcnow() - cached_row.created_at).total_seconds() / 3600
+            if age_hours <= cache_fresh_hours:
+                return {
+                    "cached": True,
+                    "generated_at": cached_row.created_at.isoformat(),
+                    "result": json.loads(cached_row.result_json),
+                }
     week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
     incidents = (
         db.query(Incident)
@@ -805,17 +831,24 @@ def advise_regenerate(incident_id: int, db: Session = Depends(get_db), _=Depends
 
 @app.get("/report/weekly/view", response_class=HTMLResponse)
 def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
-    """Raport tygodnia AI - wygenerowany na zyczenie (przycisk), z opcja
-    wyslania kopii na Telegram."""
+    """Raport tygodnia AI - serwowany z cache (do 24h), 'Generuj nowy'
+    (przycisk) wymusza swieza generacje przez /report/weekly/regenerate."""
     resp = weekly_report_endpoint(send_telegram=0, db=db)
     result = resp.get("result") or {}
     error = resp.get("error")
+    cached = resp.get("cached", False)
+    gen_ts = (resp.get("generated_at") or "")[:16].replace("T", " ")
 
     hl_html = "".join(f"<li>{h}</li>" for h in (result.get("highlights") or []))
     watch_html = "".join(f"<li>{w}</li>" for w in (result.get("watch") or []))
     err_banner = f'<div class="banner err">{error}</div>' if error else ""
+    cache_info = (
+        f'<div class="cache-info">Raport z cache — wygenerowany: {gen_ts} UTC</div>'
+        if cached else ""
+    )
     body = f"""
     {err_banner}
+    {cache_info}
     <div class="adv-box"><p>{result.get('summary', '-')}</p></div>
     <h2 class="sect">Najważniejsze zdarzenia</h2>
     <ul>{hl_html or '<div class="hint">brak</div>'}</ul>
@@ -823,9 +856,14 @@ def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
     <ul>{watch_html or '<div class="hint">brak</div>'}</ul>
     <h2 class="sect">Trendy</h2>
     <div class="adv-box"><p>{result.get('stats_comment', '-')}</p></div>
-    <form method="POST" action="/report/weekly/send-tg" style="margin-top:24px;">
-      <button type="submit">Wyślij kopię na Telegram</button>
-    </form>"""
+    <div class="btn-row">
+      <form method="POST" action="/report/weekly/regenerate">
+        <button type="submit">🔄 Generuj nowy</button>
+      </form>
+      <form method="POST" action="/report/weekly/send-tg">
+        <button type="submit" class="secondary">📤 Wyślij na Telegram</button>
+      </form>
+    </div>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="pl"><head>
@@ -840,8 +878,12 @@ def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
   .banner {{ padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:14px; max-width:760px; }}
   .banner.err {{ background:#3a1b1b; color:#e09b9b; }}
   .adv-box {{ background:#1a1a1d; border-radius:8px; padding:14px 16px; max-width:760px; }}
+  .cache-info {{ color:#777; font-size:12px; margin-bottom:12px; }}
   ul {{ color:#bbb; font-size:14px; max-width:760px; }}
-  form {{ background:none; padding:0; max-width:none; }}
+  .btn-row {{ display:flex; gap:12px; flex-wrap:wrap; margin-top:24px; }}
+  .btn-row form {{ background:none; padding:0; max-width:none; margin:0; }}
+  button {{ padding:10px 20px; border-radius:8px; border:1px solid #2a6ef0; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
+  button.secondary {{ background:transparent; border:1px solid #333; color:#ccc; }}
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
@@ -849,6 +891,15 @@ def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
   {body}
 </body></html>"""
     return html
+
+
+@app.post("/report/weekly/regenerate")
+def weekly_report_regenerate(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    """Wymusza swiezy raport tygodnia (pomija cache). Formularz POST
+    utrzymuje strone raportu widoczna podczas generowania (przegladarka
+    nie przelacza dokumentu az do odpowiedzi), redirect na widok po zakonczeniu."""
+    weekly_report_endpoint(send_telegram=0, force=1, db=db)
+    return RedirectResponse(url="/report/weekly/view", status_code=303)
 
 
 @app.post("/report/weekly/send-tg")
