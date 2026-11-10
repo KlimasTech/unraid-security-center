@@ -631,6 +631,38 @@ def rule_docker_mem_leak_correlated(
     return out
 
 
+def rule_vm_paused_io_correlated(vm: dict[str, Any], qemu_evidence: list[str]) -> list[dict]:
+    """FAZA 2: VM przeszla running->paused ORAZ w ostatnich 15 min log qemu
+    tej VM mial markery bledow (qemu_error / VFIO_DMA / monitor error) =
+    jedno spojne zdarzenie CRITICAL: pauza MA potwierdzona przyczyne w logu
+    qemu, zamiast 'pauza (prawdopodobnie I/O)' + osobno niezwiiazane markery.
+
+    qemu_evidence: lista krotkich opisow markerow (np. 'qemu_error @ 09:12'),
+    backend zbiera je z niedawnych incydentow vm_log dla TEJ samej VM.
+    Gdy korelacja strzela, backend pomija zwykly vm_paused_io_error (jeden
+    alert z dowodem zamiast dwoch)."""
+    out = []
+    cur_state = (vm.get("state") or "").lower()
+    if cur_state != "paused" or not qemu_evidence:
+        return out
+    ev = "; ".join(qemu_evidence[:3])
+    out.append({
+        "severity": "CRITICAL",
+        "category": "correlation",
+        "source": vm.get("name"),
+        "rule_id": "vm_paused_io_correlated",
+        "title": f"VM {vm.get('name')}: zapauzowana z potwierdzonym bledem w logu qemu",
+        "detail": (
+            f"Maszyna {vm.get('name')} przeszla z running do paused, a jej log qemu w "
+            f"ostatnich 15 minutach zawiera markery bledow ({ev}). Libvirt pauzuje domene "
+            "przy bledzie I/O na dysku wirtualnym - ze wzgledu na dowod w logu to niemal "
+            "na pewno problem storage: sprawdz SMART dysku, na ktorym lezy vdisk tej VM, "
+            "kabel/port SATA i stan udzialu (share)."
+        ),
+    })
+    return out
+
+
 def rule_mem_available_low(used_pct: int, available_mb: int | None = None) -> list[dict]:
     """Klasyczna regula progowa RAM hosta (nie korelacja): >90% -> WARNING.
     Uwaga: na unRAID wysokie zuzycie RAM jest NORMALNE (cache/buffer

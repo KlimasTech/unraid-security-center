@@ -399,8 +399,24 @@ def ingest_vm_health(payload: dict[str, Any], db: Session = Depends(get_db), _=D
         )
         prev = {"state": prev_row.state} if prev_row else None
         db.add(VmHealthHistory(name=name, state=vm.get("state")))
+        # Faza 2 - korelacja: pauza + markery bledow w logu qemu tej VM
+        # (niedawne incydenty vm_log, 15 min) = pauza z potwierdzona przyczyna.
+        vm_log_rule_ids = ("qemu_error", "vm_vfio_dma_failed", "vm_libvirt_error", "vm_qemu_monitor_error")
+        fifteen_min_ago = datetime.datetime.utcnow() - datetime.timedelta(minutes=15)
+        evidence_rows = db.query(Incident).filter(
+            Incident.source == name,
+            Incident.rule_id.in_(vm_log_rule_ids),
+            Incident.created_at >= fifteen_min_ago,
+        ).all()
+        qemu_evidence = [f"{r.rule_id} @ {r.created_at.strftime('%H:%M')}" for r in evidence_rows]
+        correlated = rules.rule_vm_paused_io_correlated(vm, qemu_evidence)
+        for inc in correlated:
+            _save_incident(db, inc, raw={**vm, "qemu_evidence": qemu_evidence})
+            found.append(inc)
         for rule_fn in rules.VM_HEALTH_RULES_WITH_HISTORY:
             for inc in rule_fn(vm, prev):
+                if correlated and inc.get("rule_id") == "vm_paused_io_error":
+                    continue  # zastapione przez vm_paused_io_correlated
                 _save_incident(db, inc, raw=vm)
                 found.append(inc)
     db.commit()
@@ -560,6 +576,21 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
           <div class="trend-cell"><div class="trend-label">SMART 197 (pending)</div>{_sparkline(a197)}</div>
           <div class="trend-cell"><div class="trend-label">SMART 199 (UDMA CRC)</div>{_sparkline(a199)}</div>
           <div class="trend-flag" style="color:{trend_color};">{'&#9888; 197 > 0' if (a197 and any(v and v > 0 for v in a197)) else ''}</div>
+        </div>"""
+    # --- Faza 2: trend RAM hosta (24h) w tej samej sekcji ---
+    day_ago_mem = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    mem_hist = (
+        db.query(MemoryUsageHistory)
+        .filter(MemoryUsageHistory.recorded_at >= day_ago_mem)
+        .order_by(MemoryUsageHistory.recorded_at)
+        .all()
+    )
+    if mem_hist:
+        trends_html += f"""
+        <div class="trend-row">
+          <div class="trend-dev">RAM hosta</div>
+          <div class="trend-cell"><div class="trend-label">Zajętość RAM (24h)</div>{_sparkline([m.used_pct for m in mem_hist])}</div>
+          <div class="trend-flag" style="color:{mem_color};">{'&#9888; > 90%' if (mem_used_pct or 0) > 90 else ''}</div>
         </div>"""
     if not trends_html:
         trends_html = '<div style="color:#666;font-size:13px;">Brak danych SMART (kolektor jeszcze nie zebrał historii)</div>'
