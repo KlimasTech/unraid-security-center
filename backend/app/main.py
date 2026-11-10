@@ -1072,7 +1072,7 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
     <label>Chat ID Telegram (odbiorca alertów)</label>
     <input name="telegram_chat_id" value="{s.get('telegram_chat_id') or ''}" placeholder="123456789">
 
-    <h2 class="sect">API Agenta AI (Faza 3 - doradca)</h2>
+    <h2 class="sect">API Agenta AI</h2>
     <div class="hint" style="margin:0 0 6px;">Dowolny endpoint kompatybilny z OpenAI (/chat/completions). Puste = doradca wyłączony. Dane incydentów (z redakcją sekretów) wychodzą do tego providera tylko po kliknięciu „Diagnoza AI".</div>
     <label>Base URL</label>
     <input name="ai_base_url" value="{s.get('ai_base_url') or ''}" placeholder="https://api.openai.com/v1">
