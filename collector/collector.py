@@ -18,6 +18,7 @@ import time
 import json
 import threading
 import subprocess
+import queue
 import urllib.request
 import urllib.error
 
@@ -278,22 +279,18 @@ def syslog_tail_loop():
 
 
 def fetch_smart_dump() -> dict | None:
-    """Pobiera JSON SMART wszystkich dyskow przez ograniczony klucz SSH
-    (server-side wymusza dokladnie jedna komende: usc_smart_dump.sh)."""
-    host = _settings["unraid_host"]
-    if not host:
+    """Pobiera JSON SMART wszystkich dyskow przez utrzymywana sesje
+    daemon-dyspozytora (akcja 'smart_dump', klucz ops) - tak samo jak
+    pozostale akcje telemetryczne, zeby ZADEN cykl nie otwieral nowej
+    sesji SSH (log sshd na unRAID rosnie tylko przy nawiazaniu/zerwaniu
+    sesji daemon, nigdy przy poszczegolnych odczytach)."""
+    raw = run_ops_dispatch("smart_dump")
+    if not raw:
         return None
     try:
-        result = subprocess.run(
-            ["ssh", "-i", SMART_KEY_PATH] + _ssh_multiplex_opts("smart") + [f"root@{host}"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            log(f"SMART dump SSH zwrocil kod {result.returncode}: {result.stderr.strip()[:300]}")
-            return None
-        return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
-        log(f"SMART dump BLAD: {e!r}")
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        log(f"SMART dump BLAD parsowania: {e!r}")
         return None
 
 
@@ -347,25 +344,133 @@ def smart_poll_loop():
         time.sleep(SMART_POLL_SECONDS)
 
 
-def run_ops_dispatch(action: str) -> str | None:
-    """Wywoluje dyspozytor USC (usc_dispatch.sh) przez klucz 'ops' - klient
-    wysyla `action` jako SSH command, serwer i tak zawsze wykonuje tylko
-    dyspozytor (forced command), ktory sam sprawdza biala liste akcji."""
-    host = _settings["unraid_host"]
-    if not host:
-        return None
-    try:
-        result = subprocess.run(
-            ["ssh", "-i", OPS_KEY_PATH] + _ssh_multiplex_opts("ops") + [f"root@{host}", action],
-            capture_output=True, text=True, timeout=60,
+class OpsDaemonSession:
+    """JEDNA dlugotrwala sesja SSH do dyspozytora USC (tryb 'daemon'):
+    nawiazywana raz, utrzymywana caly czas (keepalive), akcje wysylane
+    po jednej na stdin, odpowiedzi ramkowane USC_BEGIN/USC_END.
+
+    Dlaczego: przy trybie jednorazowym KAZDA akcja (docker health co 300s,
+    VM co 180s, syslog-previous co 900s, SMART co 600s, log_usage co 600s
+    x2) to nowy kanal sesji = min. 2 linie logu sshd na unRAID za kazdym
+    razem - przy takich interwalach to dziesiatki linii szumu w syslogu
+    na godzine. Utrzymywana sesja pojawia sie w sshd TYLKO przy nawiazaniu
+    i zerwaniu.
+
+    Odczyt robi DEDYKOWANY WATEK czytajacy linie do kolejki - odpowiedzi
+    moga byc duze (SMART/syslog-previous to setki KB przychodzace w
+    chunkach TCP), wiec reczny select+read czesciowo znieksztalcilby linie
+    na granicach chunkow i zlamal ramkowanie. Watkowy reader z readline()
+    jest odporny na dowolny rozmiar.
+
+    Watkobezpiecznosc: lock obejmuje pelna wymiane akcja->odpowiedz;
+    tylko jedna akcja naraz (dyspozytor i tak przetwarza je sekwencyjnie)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc = None
+        self._host = None
+        self._queue: "queue.Queue[str | None]" = queue.Queue()
+
+    def _reader_thread(self):
+        proc = self._proc
+        try:
+            for line in proc.stdout:
+                self._queue.put(line.rstrip("\n"))
+        except OSError:
+            pass
+        finally:
+            self._queue.put(None)  # sentinel: koniec strumienia
+
+    def _connect(self, host: str):
+        log(f"Ops daemon: nawiazuje sesje SSH do {host}...")
+        self._queue = queue.Queue()
+        self._proc = subprocess.Popen(
+            [
+                "ssh", "-i", OPS_KEY_PATH,
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "IdentitiesOnly=yes",
+                "-o", "ConnectTimeout=15",
+                "-o", "ServerAliveInterval=30",
+                "-o", "ServerAliveCountMax=3",
+                f"root@{host}", "daemon",
+            ],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1,
         )
-        if result.returncode != 0:
-            log(f"ops dispatch '{action}' zwrocil kod {result.returncode}: {result.stderr.strip()[:300]}")
-            return None
-        return result.stdout
-    except (subprocess.TimeoutExpired, OSError) as e:
-        log(f"ops dispatch '{action}' BLAD: {e!r}")
-        return None
+        self._host = host
+        threading.Thread(target=self._reader_thread, daemon=True).start()
+        log("Ops daemon: sesja nawiazana")
+
+    def _alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def _kill_stale(self):
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except OSError:
+                pass
+            try:
+                self._proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+        self._proc = None
+        self._host = None
+
+    def dispatch(self, action: str, timeout: float = 120.0) -> str | None:
+        """Wysyla akcje do dyspozytora, zwraca odpowiedz (lub None przy
+        niepowodzeniu). Restartuje sesje przy zerwaniu; przy timeoutie
+        zabija ja, zeby nastepny cykl zaczal od czystego polaczenia."""
+        with self._lock:
+            host = _settings["unraid_host"]
+            if not host:
+                return None
+            if not self._alive() or self._host != host:
+                if self._proc is not None:
+                    log("Ops daemon: sesja martwa/zerwana, restartuje")
+                    self._kill_stale()
+                self._connect(host)
+            try:
+                self._proc.stdin.write(action + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                log("Ops daemon: stdin zerwany, restartuje w kolejnym cyklu")
+                self._kill_stale()
+                return None
+            out_lines: list[str] = []
+            begin_seen = False
+            while True:
+                try:
+                    line = self._queue.get(timeout=timeout)
+                except queue.Empty:
+                    log(f"Ops daemon: timeout odpowiedzi na '{action}', restartuje sesje")
+                    self._kill_stale()
+                    return None
+                if line is None:  # EOF - sesja padla w trakcie odpowiedzi
+                    log(f"Ops daemon: strumien zamkniety przy '{action}', restartuje")
+                    self._kill_stale()
+                    return None
+                if not begin_seen:
+                    if line.startswith("USC_BEGIN"):
+                        begin_seen = True
+                    continue
+                if line.startswith("USC_END"):
+                    return "\n".join(out_lines)
+                out_lines.append(line)
+
+
+_OPS_DAEMON = OpsDaemonSession()
+
+
+def run_ops_dispatch(action: str) -> str | None:
+    """Kolektor - wysyla akcje przez utrzymywana sesje SSH (_OPS_DAEMON).
+
+    Utrzymywanie JEDNEJ dlugotrwalej sesji zamiast nowego polaczenia SSH
+    na kazda akcje eliminuje spam 'Starting session'/'Close session' w
+    logu sshd na unRAID (przy odpytywaniu co 180-900s to bylo dziesiatki
+    linii na godzine). Klient wysyla akcje na stdin daemon-dyspozytora,
+    odpowiedzi ramkowane USC_BEGIN/USC_END."""
+    return _OPS_DAEMON.dispatch(action)
 
 
 def docker_health_poll_loop():

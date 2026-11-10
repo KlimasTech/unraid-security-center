@@ -3,16 +3,21 @@
 <!ENTITY name      "unraid-security-center">
 <!ENTITY displayName "unRaid Security Center Plugin">
 <!ENTITY author    "KlimasTech">
-<!ENTITY version   "2026.11.17">
+<!ENTITY version   "2026.11.18">
 <!ENTITY pkgname   "&name;-&version;.txz">
 <!ENTITY pkgdir    "/boot/config/plugins/&name;">
 <!ENTITY pkgpath   "&pkgdir;/&pkgname;">
-<!ENTITY packageMD5 "8b74e59f15f61e34c03e611d1161520d">
+<!ENTITY packageMD5 "261ff2adda3cfa28edfe0ca8e2dd7743">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings" icon="logo.png">
 
 <CHANGES>
+###2026.11.18
+- Tryb 'daemon' dyspozytora: JEDNA dlugotrwala sesja SSH dla wszystkich akcji
+  telemetrycznych (ramkowane odpowiedzi USC_BEGIN/USC_END) - eliminuje
+  caly szum 'Starting session'/'Close session' w logu sshd przy kazdym
+  odpytaniu. Dodana akcja 'smart_dump' (SMART tez przez sesje daemon).
 ###2026.11.17
 - Dodano skrypt usc_docker_log_usage_dump.sh i akcje "docker_log_usage"
   w dyspozytorze: zajetosc logow kontenerow Docker wzgledem teoretycznego
