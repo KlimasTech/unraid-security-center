@@ -39,6 +39,9 @@ run_action() {
     smart_dump)
       /bin/bash "$DIR/usc_smart_dump.sh"
       ;;
+    mem_usage)
+      /bin/bash "$DIR/usc_mem_usage_dump.sh"
+      ;;
     *)
       echo "USC_DISPATCH_REJECTED: nieznana akcja" >&2
       return 1
@@ -59,7 +62,7 @@ case "$SSH_ORIGINAL_COMMAND" in
       echo "USC_END $action"
     done
     ;;
-  docker_health|syslog_previous|vm_health|vm_log_tail|log_usage|docker_log_usage|smart_dump)
+  docker_health|syslog_previous|vm_health|vm_log_tail|log_usage|docker_log_usage|smart_dump|mem_usage)
     # Tryb jednorazowy (kompatybilnosc wstecz, np. reczny test po parowaniu)
     run_action "$SSH_ORIGINAL_COMMAND"
     ;;

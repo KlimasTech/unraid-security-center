@@ -3,17 +3,22 @@
 <!ENTITY name      "unraid-security-center">
 <!ENTITY displayName "unRaid Security Center Plugin">
 <!ENTITY author    "KlimasTech">
-<!ENTITY version   "2026.11.18">
+<!ENTITY version   "2026.11.19">
 <!ENTITY pkgname   "&name;-&version;.txz">
 <!ENTITY pkgdir    "/boot/config/plugins/&name;">
 <!ENTITY pkgpath   "&pkgdir;/&pkgname;">
-<!ENTITY packageMD5 "261ff2adda3cfa28edfe0ca8e2dd7743">
+<!ENTITY packageMD5  "9dd8f41535615e7f8ffa6fec99340b9c">
 ]>
 
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="Settings" icon="logo.png">
 
 <CHANGES>
-###2026.11.18
+###2026.11.19
+- Nowa akcja "mem_usage" (usc_mem_usage_dump.sh): zajetosc RAM hosta
+  (MemTotal/MemAvailable z free -m) - material dla korelacji OOM
+  kontenerow oraz alarm wysokosci zajetosci RAM.
+- USC wymaga tej wersji pluginu do pelnej korelacji (Faza 2 backendu).
+### 2026.11.18
 - Tryb 'daemon' dyspozytora: JEDNA dlugotrwala sesja SSH dla wszystkich akcji
   telemetrycznych (ramkowane odpowiedzi USC_BEGIN/USC_END) - eliminuje
   caly szum 'Starting session'/'Close session' w logu sshd przy kazdym

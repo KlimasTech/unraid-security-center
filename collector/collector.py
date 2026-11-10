@@ -663,6 +663,29 @@ def docker_log_usage_poll_loop():
         time.sleep(LOG_USAGE_POLL_SECONDS)
 
 
+MEM_USAGE_ENABLED = os.environ.get("USC_MEM_USAGE_ENABLED", "1") == "1"
+MEM_USAGE_POLL_SECONDS = int(os.environ.get("USC_MEM_USAGE_POLL_SECONDS", "300"))
+
+
+def mem_usage_poll_loop():
+    """Petla w osobnym watku: co MEM_USAGE_POLL_SECONDS pobiera zajetosc
+    RAM hosta unRAID (free -m przez dyspozytor) - material dla korelacji
+    OOM kontenera (Faza 2) + klasyczny alarm wysokosci zajetosci.
+    Czestszy niz SMART/log_usage (300s), bo korelacja OOM porownuje dwa
+    KOLEJNE pomiary - rzadszy poll zwykle przegapilby moment zabicia."""
+    log(f"Mem usage poller: start, poll co {MEM_USAGE_POLL_SECONDS}s")
+    while True:
+        try:
+            raw = run_ops_dispatch("mem_usage")
+            if raw:
+                data = json.loads(raw.strip())
+                post_backend("/ingest/memory", data)
+                log(f"Mem usage poller: cykl OK, RAM zajety {data.get('used_pct')}%")
+        except Exception as e:  # noqa: BLE001
+            log(f"Mem usage poller BLAD: {e!r}")
+        time.sleep(MEM_USAGE_POLL_SECONDS)
+
+
 def settings_refresh_loop():
     """Odswieza host/klucz unRAID z panelu co SETTINGS_REFRESH_SECONDS -
     zmiana w panelu dziala bez przebudowy kolektora (max. opoznienie =
@@ -706,6 +729,10 @@ def main():
         threading.Thread(target=docker_log_usage_poll_loop, daemon=True).start()
     else:
         log("Log usage polling wylaczony (USC_LOG_USAGE_ENABLED=0)")
+    if MEM_USAGE_ENABLED:
+        threading.Thread(target=mem_usage_poll_loop, daemon=True).start()
+    else:
+        log("Mem usage polling wylaczony (USC_MEM_USAGE_ENABLED=0)")
     while True:
         try:
             run_once()

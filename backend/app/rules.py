@@ -495,3 +495,158 @@ def rule_disk_space_low(share: dict[str, Any], threshold_pct: float = 90.0) -> l
 
 # Wszystkie reguly operujace na pojedynczym dysku (z historia poprzedniego odczytu)
 DISK_RULES = [rule_disk_critical, rule_disk_warning, rule_disk_errors_increasing]
+
+
+# ---------------------------------------------------------------------------
+# Faza 2: detekcja w torze syslog + korelacja wielomodulowa.
+# ---------------------------------------------------------------------------
+# Kernel loguje problemy toru SATA jako seria zdarzen na ata<N> (port), a
+# smartctl raportuje UDMA CRC na /dev/sdX - NIE ma wspolnego klucza, wiec
+# korelacja jest per-HOST, nie per-dysk. To zamierzone: pojedynczy zly kabel
+# potrafi wywalac caly port/controler i wplywac na wiele dyskow.
+_SATA_RESET_MARKERS = (
+    "hard resetting link",
+    "SATA link down",
+    "SATA link is slow to respond",
+    "exception Emask",
+    "failed command: READ FPDMA",
+    "failed command: WRITE FPDMA",
+)
+
+
+def is_sata_reset_line(log_line: str) -> bool:
+    """Czy linia kernela wyglada na reset/problem toru SATA (ata<N>)?
+
+    Uzywane na DWA sposoby: (1) przez backend przy zapisie linii do
+    syslog_lines jako wartosc zindexowanej flagi is_sata_reset, zeby
+    korelacja liczyla reset prostym COUNT; (2) przez rule_sata_reset
+    do powstania samego incydentu z linii.
+    """
+    return "kernel:" in log_line and any(m in log_line for m in _SATA_RESET_MARKERS)
+
+
+def rule_sata_reset(log_line: str) -> list[dict]:
+    """Reset/problem toru SATA w linii sysloga -> incydenty INFO.
+
+    Pojedyncza linia to jeszcze nie problem - dopiero seria == realny
+    problem toru, a o tym decyduje korelacja smart_x199_link (doswiadczenie
+    z false-positive na 'SATA link is slow to respond' przy spin-up).
+    zglaszamy kazdy reset jako INFO, zeby (a) seryjnosc byla widoczna w
+    panelu, (b) korelacja miala na czym pracowac. Deduplikacja w oknie
+    czasowym (10 min) jest po stronie backendu (liczba resetow z linii
+    z ostatniego cyklu syslog-tail), nie w samej regule.
+    """
+    out = []
+    if is_sata_reset_line(log_line):
+        out.append({
+            "severity": "INFO",
+            "category": "sata_link",
+            "source": "syslog",
+            "rule_id": "sata_reset",
+            "title": f"Reset linku SATA w syslogu: {_log_timestamp(log_line)}",
+            "detail": f"Linia logu: {_log_timestamp(log_line)}",
+        })
+    return out
+
+
+def rule_smart_199_link_correlated(
+    smart: dict[str, Any],
+    prev: dict[str, Any] | None,
+    sata_resets_24h: int,
+) -> list[dict]:
+    """FAZA 2, korelacja wlasciwa: rosnacy SMART 199 (UDMA CRC) + realne
+    resety toru SATA w syslogu w 24h + brak degradacji talerza (197/198=0)
+    = rozpoznana wada toru transmisyjnego (kabel/backplane/zasilanie).
+
+    Zamiast dwoch oderwanych alertow ('kabel podejrzewany, bo CRC rosnie' +
+    chora seria resetow INFO) jeden spojny alert WARNING z DOWODEM.
+    sata_resets_24h przesyla backend (COUNT gotowej flagi is_sata_reset).
+    """
+    out = []
+    cur_199 = smart.get("attr_199")
+    if prev is None or cur_199 is None:
+        return out
+    prev_199 = prev.get("attr_199")
+    if prev_199 is None or cur_199 <= prev_199:
+        return out
+    attr_197 = smart.get("attr_197") or 0
+    attr_198 = smart.get("attr_198") or 0
+    if attr_197 == 0 and attr_198 == 0 and sata_resets_24h > 0:
+        out.append({
+            "severity": "WARNING",
+            "category": "correlation",
+            "source": smart.get("device"),
+            "rule_id": "smart_x199_link_correlated",
+            "title": (
+                f"{smart.get('device')}: wada toru SATA (kabel/backplane) - rosnacy "
+                f"UDMA CRC {prev_199}->{cur_199} + {sata_resets_24h} resetow SATA w 24h"
+            ),
+            "detail": (
+                f"Dysk {smart.get('device')} ({smart.get('model', '?')}): UDMA CRC rosnie, "
+                f"sektory oczekujace/nekorygowalne = 0, przy tym syslog pokazuje "
+                f"{sata_resets_24h} resetow toru SATA w ostatnich 24h. Trzy niezalezne "
+                "poswiadczenia wskazuja wade toru transmisyjnego (kabel SATA, backplane, "
+                "zasilanie), NIE degradacje talerza. Wymien kabel SATA / przeloz dysk "
+                "na inny slot backplane zanim wydasz dysk za zly."
+            ),
+        })
+    return out
+
+
+def rule_docker_mem_leak_correlated(
+    health: dict[str, Any],
+    ram_jump: int | None,
+) -> list[dict]:
+    """FAZA 2: OOM kill + (spadek dostepnego RAM hosta >= 500MB miedzy
+    pomiarami) = spojny obraz wycieku pamieci aplikacji w kontenerze,
+    zamiast dwoch oderwanych alertow (zabity OOM + skok RestartCount,
+    osobno). Klasyczny przyklad z roadmapy: Docker restart + OOM +
+    skok RAM = wyciek pamieci kontenera, nie 'blad aplikacji'.
+
+    ram_jump: ile MB dostepnego RAM hosta ZNika z pomiaru poprzedniego
+    na aktualny (dodatnie = RAM zniknal). Backend przekazuje, bo musi
+    porownac dwa pomiary z memory_usage_history.
+    """
+    out = []
+    if not health.get("oom_killed"):
+        return out
+    if ram_jump is None or ram_jump < 500:
+        return out
+    out.append({
+        "severity": "ERROR",
+        "category": "correlation",
+        "source": health.get("name"),
+        "rule_id": "docker_mem_leak_correlated",
+        "title": (
+            f"Kontener {health.get('name')}: OOM kill + spadek dostepnego RAM hosta "
+            f"o {ram_jump} MB - podejrzenie wycieku pamieci"
+        ),
+        "detail": (
+            f"Kontener zostal zabity przez OOM Killer (exit_code={health.get('exit_code')}) "
+            f"przy jednoczesnym spadku dostepnego RAM hosta o {ram_jump} MB. To wskazuje na "
+            "zuzycie pamieci rosnace w czasie (wyciek w aplikacji kontenera), a nie pojedynczy "
+            "'skok' zuzycia. Sprawdz trend pamieci aplikacji i ustal limit pamieci kontenera."
+        ),
+    })
+    return out
+
+
+def rule_mem_available_low(used_pct: int, available_mb: int | None = None) -> list[dict]:
+    """Klasyczna regula progowa RAM hosta (nie korelacja): >90% -> WARNING.
+    Uwaga: na unRAID wysokie zuzycie RAM jest NORMALNE (cache/buffer
+    adaptacyjnie zjada wolny RAM), wiec prog jest wysokim progiem, a
+    decyduje dostepny RAM, ktorego kernel realnie nie moze uwolnic."""
+    out = []
+    if used_pct is not None and used_pct > 90:
+        detail = f"Zajetosc RAM hosta unRAID: {used_pct}%."
+        if available_mb is not None:
+            detail = f"Zajetosc RAM hosta unRAID: {used_pct}% (dostepne: {available_mb} MB)."
+        out.append({
+            "severity": "WARNING",
+            "category": "memory",
+            "source": "host",
+            "rule_id": "mem_available_low",
+            "title": f"RAM hosta zajety w {used_pct}%",
+            "detail": detail,
+        })
+    return out

@@ -57,6 +57,8 @@ Plugin na samym unRAID instaluje się osobno — pełna procedura w
 | Docker | state/status/autoStart (GraphQL) + RestartCount/OOMKilled/Health (plugin) | GraphQL + SSH + `docker inspect` |
 | VM (libvirt/QEMU) | stan domeny, przejścia running→paused (błąd I/O), markery błędów w logu qemu | SSH + `virsh` + logi qemu |
 | Logi systemowe | `tail -F /var/log/syslog` na żywo + `syslog-previous` po restarcie (crash-persistent) | SSH, dwa niezależne strumienie |
+| RAM hosta | MemTotal/MemAvailable (`free -m`), co 300s | SSH + dyspozytor (plugin) |
+| Korelacja (Faza 2) | rosnący SMART 199 + resety SATA w syslogu = wada toru transmisyjnego (jeden alert z dowodem); OOM kontenera + zniknięcie RAM hosta = wyciek pamięci | backend, nad historią z modułów powyżej |
 | Alerty | Telegram (plain text, bez Markdown — patrz ARCHITECTURE.md) | Bot API |
 
 ## Konfiguracja
@@ -88,7 +90,9 @@ restartu kontenerów — kolektor odpytuje backend o nie co ~60s
 ## Roadmapa
 
 Faza 1 (fundament: GraphQL, SMART, Docker, VM, syslog, Telegram) — ✅ zrobione.
-Faza 2 (korelacja wielomodułowa, trendy) i Faza 3 (AI-doradca bez uprawnień
+Faza 2 (korelacja wielomodułowa, trendy) — ✅ pierwsza część: korelacja
+SMART 199 + resety SATA, korelacja OOM + RAM hosta, trendy SMART (sparkline)
+na dashboardzie, monitoring RAM. Faza 3 (AI-doradca bez uprawnień
 wykonawczych) — planowane, patrz `ARCHITECTURE.md`.
 
 ## Licencja

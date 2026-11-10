@@ -137,6 +137,43 @@ class DockerLogUsageHistory(Base):
     container_count = Column(Integer, nullable=True)
 
 
+class SyslogLine(Base):
+    """Surowe linie syslogu unRAID (tail na zywo + syslog-previous).
+
+    Przechowywane TYLKO na potrzeby korelacji wielomodulowej (Faza 2) -
+    np. licznik resetow linku SATA jako poswiadczenie dla rosnacego
+    SMART 199 (UDMA CRC). Nie sa zadnym incydentem samym w sobie;
+    interaktywna przegladarka logow celowo NIE jest budowana na tych
+    danych (prune do 48h, brak indeksow full-text - to nie ELK).
+    """
+
+    __tablename__ = "syslog_lines"
+
+    id = Column(Integer, primary_key=True, index=True)
+    received_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    line = Column(Text)
+    # Pochodna: linia wyglada na reset linku SATA (kernel ata). Liczona
+    # przy zapisie (rules.is_sata_reset_line), zeby korelacja SMART 199
+    # mogla policzyc resetow prostym COUNT po zaindeksowanej fladze,
+    # zamiast regexa po Text w SQL przy KAZdym ingescie SMART.
+    is_sata_reset = Column(Boolean, default=False, index=True)
+
+
+class MemoryUsageHistory(Base):
+    """Zajetosc RAM hosta unRAID (MemTotal/MemAvailable z free -m) -
+    poswiadczenie dla korelacji OOM kontenera (skok zuzycia RAM hosta
+    w momencie zabicia kontenera = rzeczywisty brak pamieci, prawdopodobny
+    wyciek pamieci w kontenerze), zamiast trzech oderwanych alertow."""
+
+    __tablename__ = "memory_usage_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recorded_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    total_mb = Column(Integer, nullable=True)
+    available_mb = Column(Integer, nullable=True)
+    used_pct = Column(Integer, nullable=True)
+
+
 class Setting(Base):
     """Ustawienia konfigurowalne z panelu (nie z .env) - np. host unRAID,
     klucz API, token/chat Telegram. Prostzy key-value store."""

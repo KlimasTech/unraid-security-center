@@ -24,6 +24,7 @@ from sqlalchemy import desc
 from app.db import (
     init_db, get_db, Incident, DiskHistory, SmartAttrHistory,
     DockerHealthHistory, VmHealthHistory, LogUsageHistory, DockerLogUsageHistory,
+    SyslogLine, MemoryUsageHistory,
     get_all_settings, set_setting, seed_settings_from_env,
 )
 from app import rules
@@ -174,14 +175,67 @@ def ingest_shares(payload: dict[str, Any], db: Session = Depends(get_db), _=Depe
 
 @app.post("/ingest/syslog")
 def ingest_syslog(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
-    """payload = {"lines": ["...", "..."]}"""
+    """payload = {"lines": ["...", "..."]}
+
+    Linie sa PRZECHOWYWANE w syslog_lines (z pochodna flaga is_sata_reset)
+    - to material dla korelacji Fazy 2 (np. rosnacy SMART 199 + seria resetow
+    SATA = wada toru transmisyjnego). Prune do 48h przy kazdym ingescie.
+    """
+    lines = payload.get("lines", [])
     found = []
-    for line in payload.get("lines", []):
+    sata_seen = 0
+    first_reset_line = None
+    for line in lines:
+        is_reset = rules.is_sata_reset_line(line)
+        if is_reset and first_reset_line is None:
+            first_reset_line = line
+        db.add(SyslogLine(line=line, is_sata_reset=is_reset))
         for inc in rules.rule_kernel_panic(line):
             _save_incident(db, inc, raw={"line": line})
             found.append(inc)
         for inc in rules.rule_webgui_login(line):
             _save_incident(db, inc, raw={"line": line})
+            found.append(inc)
+        if is_reset:
+            sata_seen += 1
+    # Incydent sata_reset: deduplikacja 10-minutowa - seria resetow przy
+    # jednym zdarzeniu kernela to kilka linii, nie chcemy N IDENTYCZNYCH
+    # incydentow INFO, wystarczy jeden na okno (korelacja liczy linie
+    # z syslog_lines, nie incydenty).
+    if sata_seen:
+        ten_min_ago = datetime.datetime.utcnow() - datetime.timedelta(minutes=10)
+        recent = db.query(Incident).filter(
+            Incident.rule_id == "sata_reset", Incident.created_at >= ten_min_ago
+        ).first()
+        if not recent:
+            inc = rules.rule_sata_reset(first_reset_line)
+            for i in inc:
+                _save_incident(db, i, raw={"sata_reset_lines": sata_seen})
+                found.append(i)
+    # Prune: trzymamy tylko 48h linii (korelacja patrzy 24h wstecz +
+    # zapas); bez tego tabela roslaby w nieskonczonosc.
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=48)
+    db.query(SyslogLine).filter(SyslogLine.received_at < cutoff).delete()
+    db.commit()
+    return {"incidents_found": len(found), "incidents": found}
+
+
+@app.post("/ingest/memory")
+def ingest_memory(payload: dict[str, Any], db: Session = Depends(get_db), _=Depends(verify_internal)):
+    """payload = {"total_mb": 32042, "available_mb": 8123, "used_pct": 75}
+    - zajetosc RAM hosta unRAID (free -m przez dyspozytor USC)."""
+    used_pct = payload.get("used_pct")
+    available_mb = payload.get("available_mb")
+    db.add(MemoryUsageHistory(
+        total_mb=payload.get("total_mb"),
+        available_mb=available_mb,
+        used_pct=used_pct,
+    ))
+    db.commit()
+    found = []
+    if used_pct is not None:
+        for inc in rules.rule_mem_available_low(used_pct, available_mb):
+            _save_incident(db, inc, raw=payload)
             found.append(inc)
     return {"incidents_found": len(found), "incidents": found}
 
@@ -256,12 +310,29 @@ def ingest_smart(payload: dict[str, Any], db: Session = Depends(get_db), _=Depen
             nvme_critical_warning=smart.get("nvme_critical_warning"),
             temperature=smart.get("temperature"),
         ))
+        # Faza 2 - korelacja: rosnacy UDMA CRC + reset linku SATA potwierdzone
+        # w przechowywanym syslogu (24h). Liczymy po zindexowanej fladze, nie
+        # po tekscie linii. Pierwsza kolejnosc: gdy korelacja strzela, zwykla
+        # regula 'cable_suspect' NIE zglasza incydentu - jeden spojny alert
+        # z dowodem zamiast dwoch alarmow o tym samym sygnale.
+        day_ago = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+        sata_resets_24h = (
+            db.query(SyslogLine)
+            .filter(SyslogLine.is_sata_reset.is_(True), SyslogLine.received_at >= day_ago)
+            .count()
+        )
+        correlated = rules.rule_smart_199_link_correlated(smart, prev, sata_resets_24h)
+        for inc in correlated:
+            _save_incident(db, inc, raw={**smart, "sata_resets_24h": sata_resets_24h})
+            found.append(inc)
         for rule_fn in rules.SMART_RULES_SINGLE:
             for inc in rule_fn(smart):
                 _save_incident(db, inc, raw=smart)
                 found.append(inc)
         for rule_fn in rules.SMART_RULES_WITH_HISTORY:
             for inc in rule_fn(smart, prev):
+                if correlated and inc.get("rule_id") == "smart_199_cable_suspect":
+                    continue  # zastapione przez smart_x199_link_correlated
                 _save_incident(db, inc, raw=smart)
                 found.append(inc)
     db.commit()
@@ -296,6 +367,20 @@ def ingest_docker_health(payload: dict[str, Any], db: Session = Depends(get_db),
             for inc in rule_fn(health, prev):
                 _save_incident(db, inc, raw=health)
                 found.append(inc)
+        # Faza 2 - korelacja: OOM kill + znikniecie RAM hosta miedzy dwoma
+        # ostatnimi pomiarami = spojny obraz wycieku pamieci kontenera.
+        last_two = (
+            db.query(MemoryUsageHistory)
+            .order_by(desc(MemoryUsageHistory.recorded_at))
+            .limit(2)
+            .all()
+        )
+        ram_jump = None
+        if len(last_two) == 2 and last_two[0].available_mb is not None and last_two[1].available_mb is not None:
+            ram_jump = last_two[1].available_mb - last_two[0].available_mb
+        for inc in rules.rule_docker_mem_leak_correlated(health, ram_jump):
+            _save_incident(db, inc, raw={**health, "ram_jump_mb": ram_jump})
+            found.append(inc)
     db.commit()
     return {"incidents_found": len(found), "incidents": found}
 
@@ -416,6 +501,68 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     latest_docker_log_usage = db.query(DockerLogUsageHistory).order_by(desc(DockerLogUsageHistory.recorded_at)).first()
     docker_log_usage_pct = latest_docker_log_usage.used_pct if latest_docker_log_usage else None
     docker_log_usage_color = "#B00020" if (docker_log_usage_pct or 0) >= 95 else ("#F9A825" if (docker_log_usage_pct or 0) >= 80 else "#eee")
+    latest_mem = db.query(MemoryUsageHistory).order_by(desc(MemoryUsageHistory.recorded_at)).first()
+    mem_used_pct = latest_mem.used_pct if latest_mem else None
+    mem_color = "#B00020" if (mem_used_pct or 0) >= 95 else ("#F9A825" if (mem_used_pct or 0) >= 90 else "#eee")
+
+    # --- Faza 2: trendy SMART (7 dni) - sparkline SVG per dysk ---
+    def _sparkline(values: list[int | None], width: int = 220, height: int = 36) -> str:
+        """Minimalistyczny sparkline SVG (rysowany serwerowo, zero JS/CDN).
+        None (brak odczytu) przerywa linie; ostatnia wartosc przy gornym skali zakresu -> pomaranczowy."""
+        pts = [v for v in values if v is not None]
+        if len(pts) < 2:
+            return '<span style="color:#555;font-size:12px;">za mało danych</span>'
+        lo, hi = min(pts), max(pts)
+        span = (hi - lo) or 1
+        n = len(values)
+        d_parts = []
+        prev_v = None
+        for i, v in enumerate(values):
+            x = 2 + i * (width - 4) / max(n - 1, 1)
+            if v is None:
+                prev_v = None
+                continue
+            y = height - 4 - (v - lo) * (height - 8) / span
+            d_parts.append(("M" if prev_v is None else "L") + f"{x:.0f} {y:.0f}")
+            prev_v = v
+        color = "#888"
+        if pts[-1] is not None and pts[-1] > 0 and lo >= 0 and lo + (hi - lo) * 0.8 <= pts[-1]:
+            color = "#F9A825"
+        d_attr = "".join(d_parts)
+        return (
+            '<svg width="' + str(width) + '" height="' + str(height) + '" style="vertical-align:middle;">'
+            '<path d="' + d_attr + '" fill="none" stroke="' + color + '" stroke-width="1.5"/></svg>'
+            '<span style="color:#999;font-size:11px;margin-left:6px;">' + str(pts[-1]) + '&nbsp;(min ' + str(lo) + ', max ' + str(hi) + ')</span>'
+        )
+
+    week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+    smart_devices = [
+        r[0] for r in db.query(SmartAttrHistory.device).distinct().all()
+    ]
+    trends_html = ""
+    for device in sorted(d or "" for d in smart_devices):
+        hist = (
+            db.query(SmartAttrHistory)
+            .filter(SmartAttrHistory.device == device, SmartAttrHistory.recorded_at >= week_ago)
+            .order_by(SmartAttrHistory.recorded_at)
+            .all()
+        )
+        if not hist:
+            continue
+        temps = [h.temperature for h in hist]
+        a197 = [h.attr_197 for h in hist]
+        a199 = [h.attr_199 for h in hist]
+        trend_color = "#B00020" if (a197 and any(v and v > 0 for v in a197)) else "#eee"
+        trends_html += f"""
+        <div class="trend-row">
+          <div class="trend-dev">{device}</div>
+          <div class="trend-cell"><div class="trend-label">Temperatura</div>{_sparkline(temps)}</div>
+          <div class="trend-cell"><div class="trend-label">SMART 197 (pending)</div>{_sparkline(a197)}</div>
+          <div class="trend-cell"><div class="trend-label">SMART 199 (UDMA CRC)</div>{_sparkline(a199)}</div>
+          <div class="trend-flag" style="color:{trend_color};">{'&#9888; 197 > 0' if (a197 and any(v and v > 0 for v in a197)) else ''}</div>
+        </div>"""
+    if not trends_html:
+        trends_html = '<div style="color:#666;font-size:13px;">Brak danych SMART (kolektor jeszcze nie zebrał historii)</div>'
     rows_html = ""
     cards_html = ""
     for r in rows:
@@ -455,6 +602,13 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
   .stat {{ background:#1a1a1d; border-radius:8px; padding:16px 24px; flex:1 1 140px; }}
   .stat .num {{ font-size:28px; font-weight:700; }}
   .stat .label {{ color:#888; font-size:12px; text-transform:uppercase; }}
+  .trends {{ background:#1a1a1d; border-radius:8px; padding:14px 16px; margin-bottom:24px; }}
+  .trend-row {{ display:flex; align-items:center; gap:18px; padding:8px 0; border-bottom:1px solid #26262a; flex-wrap:wrap; }}
+  .trend-row:last-child {{ border-bottom:none; }}
+  .trend-dev {{ font-weight:600; min-width:90px; }}
+  .trend-cell {{ flex:0 1 auto; }}
+  .trend-label {{ color:#888; font-size:11px; text-transform:uppercase; margin-bottom:2px; }}
+  .trend-flag {{ font-size:12px; font-weight:600; margin-left:auto; }}
   table {{ width:100%; border-collapse:collapse; background:#1a1a1d; border-radius:8px; overflow:hidden; table-layout:fixed; }}
   th {{ text-align:left; padding:8px 10px; background:#222; color:#999; font-size:12px; text-transform:uppercase; }}
   td {{ word-break:break-word; }}
@@ -484,6 +638,11 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
     <div class="stat"><div class="num">{len(rows)}</div><div class="label">Ostatnie 200</div></div>
     <div class="stat"><div class="num" style="color:{log_usage_color};">{log_usage_pct if log_usage_pct is not None else '?'}%</div><div class="label">Zajętość /var/log</div></div>
     <div class="stat"><div class="num" style="color:{docker_log_usage_color};">{docker_log_usage_pct if docker_log_usage_pct is not None else '?'}%</div><div class="label">Zajętość logów Docker</div></div>
+    <div class="stat"><div class="num" style="color:{mem_color};">{mem_used_pct if mem_used_pct is not None else '?'}%</div><div class="label">RAM hosta unRAID</div></div>
+  </div>
+  <h2 style="font-size:15px;margin:8px 0 10px;">Trendy SMART (7 dni)</h2>
+  <div class="trends">
+    {trends_html}
   </div>
   <div class="desktop-table">
     <table>
