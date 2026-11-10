@@ -26,6 +26,23 @@ _NOTIFY_SEVERITIES = {"WARNING", "ERROR", "CRITICAL"}
 _ALWAYS_NOTIFY_RULE_IDS = {"webgui_login_success", "webgui_login_failed"}
 
 
+def send_plain_message(text: str, bot_token: str | None, chat_id: str | None) -> bool:
+    """Wysyla dowolny tekst (plain, bez parse_mode) - uzywane przez raport
+    tygodniowy AI-doradcy. Zwraca True gdy wyslano."""
+    if not bot_token or not chat_id or not text:
+        return False
+    body = json.dumps({"chat_id": chat_id, "text": text[:4000]}).encode()
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read())
+            return bool(resp.get("ok"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        print(f"[usc-telegram] WYJATEK przy wysylce (plain): {e!r}", flush=True)
+        return False
+
+
 def send_incident_alert(incident: dict, bot_token: str | None, chat_id: str | None) -> bool:
     """incident = {"severity", "category", "source", "title", "detail"}. Zwraca True gdy wyslano.
 

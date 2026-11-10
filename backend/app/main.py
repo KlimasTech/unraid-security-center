@@ -24,12 +24,13 @@ from sqlalchemy import desc
 from app.db import (
     init_db, get_db, Incident, DiskHistory, SmartAttrHistory,
     DockerHealthHistory, VmHealthHistory, LogUsageHistory, DockerLogUsageHistory,
-    SyslogLine, MemoryUsageHistory,
+    SyslogLine, MemoryUsageHistory, Advisory, get_ai_settings,
     get_all_settings, set_setting, seed_settings_from_env,
 )
 from app import rules
 from app import telegram
 from app import unraid_pair
+from app import ai_advisor
 
 app = FastAPI(title="unRaid Security Center (USC)", version="0.2.0")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -434,6 +435,187 @@ def ingest_vm_log(payload: dict[str, Any], db: Session = Depends(get_db), _=Depe
     return {"incidents_found": len(found), "incidents": found}
 
 
+def _build_incident_context(db: Session, incident_row) -> dict:
+    """Buduje (deterministycznie, z budzetem) kontekst dla AI-doradcy:
+    historia SMART zrodlowego dysku, powiazane incydenty (to zrodlo),
+    oraz relevante linie syslogu z 24h. WSZYSTKO przechodzi przez
+    redact_secrets przed wyjsciem z tej funkcji."""
+    source = incident_row.source or ""
+    context: dict[str, Any] = {"smart_history": [], "related": [], "syslog_lines": []}
+
+    # historia SMART dysku-zrodla (ostatnie 24h, max 20 pomiarow)
+    if source.startswith("/dev/") or source.startswith("sd"):
+        day_ago = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+        rows = (
+            db.query(SmartAttrHistory)
+            .filter(SmartAttrHistory.device == source, SmartAttrHistory.recorded_at >= day_ago)
+            .order_by(desc(SmartAttrHistory.recorded_at))
+            .limit(20)
+            .all()
+        )
+        context["smart_history"] = [
+            {
+                "recorded_at": r.recorded_at.isoformat(), "attr_197": r.attr_197,
+                "attr_198": r.attr_198, "attr_199": r.attr_199, "temperature": r.temperature,
+            }
+            for r in rows
+        ]
+
+    # powiazane incydenty (to samo zrodlo, nie ten sam, ostatnie 5)
+    related = (
+        db.query(Incident)
+        .filter(Incident.source == source, Incident.id != incident_row.id)
+        .order_by(desc(Incident.created_at))
+        .limit(5)
+        .all()
+    )
+    context["related"] = [
+        {"created_at": r.created_at.isoformat(), "severity": r.severity,
+         "rule_id": r.rule_id, "title": r.title, "detail": r.detail}
+        for r in related
+    ]
+
+    # linie syslogu z 24h pasujace do zrodla lubSlow kluczowych incydentu
+    day_ago = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    keywords = [w for w in (source, incident_row.category) if w]
+    sys_rows = (
+        db.query(SyslogLine)
+        .filter(SyslogLine.received_at >= day_ago)
+        .order_by(desc(SyslogLine.received_at))
+        .limit(500)
+        .all()
+    )
+    picked = []
+    for r in sys_rows:
+        if any(k and k in (r.line or "") for k in keywords):
+            picked.append(r.line)
+        if len(picked) >= 30:
+            break
+    context["syslog_lines"] = picked
+
+    # redakcja sekretow CALOSCI kontekstu + incydentu (defence-in-depth)
+    context = json.loads(ai_advisor.redact_secrets(json.dumps(context, default=str)))
+    return context
+
+
+@app.post("/incidents/{incident_id}/advise")
+def advise_incident_endpoint(
+    incident_id: int, regenerate: int = 0,
+    db: Session = Depends(get_db), _=Depends(verify_admin),
+):
+    """Diagnoza AI incydentu (Faza 3). Reczny trigger z panelu, cache
+    w advisories (regenerate=1 wymusza ponowne generowanie)."""
+    row = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not row:
+        return {"error": "not found"}
+    if not regenerate:
+        cached = (
+            db.query(Advisory)
+            .filter(Advisory.incident_id == incident_id, Advisory.kind == "incident")
+            .order_by(desc(Advisory.created_at))
+            .first()
+        )
+        if cached and cached.result_json:
+            return {"incident_id": incident_id, "cached": True,
+                    "result": json.loads(cached.result_json)}
+        if cached and cached.error:
+            return {"incident_id": incident_id, "cached": True, "error": cached.error}
+
+    incident = {
+        "severity": row.severity, "category": row.category, "source": row.source,
+        "rule_id": row.rule_id, "title": row.title, "detail": row.detail,
+        "created_at": row.created_at.isoformat(),
+    }
+    context = _build_incident_context(db, row)
+    advisory_row = Advisory(incident_id=incident_id, kind="incident")
+    try:
+        result = ai_advisor.advise_incident(get_ai_settings(db), incident, context)
+        advisory_row.result_json = json.dumps(result, ensure_ascii=False)
+        error = None
+    except ai_advisor.AIAdvisorError as e:
+        result, error = None, str(e)
+        advisory_row.error = error
+    db.add(advisory_row)
+    db.commit()
+    if error:
+        return {"incident_id": incident_id, "error": error}
+    return {"incident_id": incident_id, "cached": False, "result": result}
+
+
+@app.post("/report/weekly")
+def weekly_report_endpoint(send_telegram: int = 0, db: Session = Depends(get_db), _=Depends(verify_admin)):
+    """Raport stanu AI za ostatnie 7 dni (incydenty + trendy). Opcjonalnie
+    wysylka na Telegram (send_telegram=1)."""
+    week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+    incidents = (
+        db.query(Incident)
+        .filter(Incident.created_at >= week_ago)
+        .order_by(desc(Incident.created_at))
+        .limit(150)
+        .all()
+    )
+    incidents_payload = [
+        {"created_at": r.created_at.isoformat(), "severity": r.severity,
+         "category": r.category, "source": r.source, "rule_id": r.rule_id,
+         "title": r.title, "status": r.status}
+        for r in incidents
+    ]
+    # trendy: SMART per dysk (min/max/ostatnia z 7 dni) + RAM (min/max/ostatnia)
+    smart_trends = {}
+    for dev_row in db.query(SmartAttrHistory.device).distinct().all():
+        device = dev_row[0]
+        hist = (
+            db.query(SmartAttrHistory)
+            .filter(SmartAttrHistory.device == device, SmartAttrHistory.recorded_at >= week_ago)
+            .order_by(SmartAttrHistory.recorded_at)
+            .all()
+        )
+        if not hist:
+            continue
+        def _mm(field):
+            vals = [getattr(h, field) for h in hist if getattr(h, field) is not None]
+            if not vals:
+                return None
+            return {"min": min(vals), "max": max(vals), "last": vals[-1]}
+        smart_trends[device] = {"attr_199": _mm("attr_199"), "attr_197": _mm("attr_197"),
+                                "temperature": _mm("temperature")}
+    mem_hist = db.query(MemoryUsageHistory).filter(
+        MemoryUsageHistory.recorded_at >= week_ago
+    ).order_by(MemoryUsageHistory.recorded_at).all()
+    mem_vals = [m.used_pct for m in mem_hist if m.used_pct is not None]
+    ram_trend = ({"min": min(mem_vals), "max": max(mem_vals), "last": mem_vals[-1]}
+                 if mem_vals else None)
+
+    advisory_row = Advisory(kind="weekly_report")
+    try:
+        result = ai_advisor.advise_weekly_report(
+            get_ai_settings(db), incidents_payload,
+            {"smart": smart_trends, "ram": ram_trend},
+        )
+        advisory_row.result_json = json.dumps(result, ensure_ascii=False)
+        error = None
+    except ai_advisor.AIAdvisorError as e:
+        result, error = None, str(e)
+        advisory_row.error = error
+    db.add(advisory_row)
+    db.commit()
+    if error:
+        return {"error": error}
+
+    if send_telegram:
+        settings = get_all_settings(db)
+        text = (
+            "🤖 USC - raport tygodnia (AI)\n\n"
+            f"{result.get('summary', '')}\n\n"
+            "Najważniejsze:\n- " + "\n- ".join(result.get("highlights") or ["-"]) + "\n\n"
+            "Obserwować:\n- " + "\n- ".join(result.get("watch") or ["-"])
+        )
+        telegram.send_plain_message(
+            text, settings.get("telegram_bot_token"), settings.get("telegram_chat_id")
+        )
+    return {"cached": False, "result": result}
+
+
 @app.get("/internal/settings")
 def internal_settings(db: Session = Depends(get_db), _=Depends(verify_internal)):
     """Kolektor pobiera stad host/klucz unRAID (ustawiane w panelu, nie w
@@ -444,6 +626,159 @@ def internal_settings(db: Session = Depends(get_db), _=Depends(verify_internal))
         "unraid_host": settings.get("unraid_host"),
         "unraid_api_key": settings.get("unraid_api_key"),
     }
+
+
+@app.get("/advise/{incident_id}", response_class=HTMLResponse)
+def advise_page(incident_id: int, db: Session = Depends(get_db), _=Depends(verify_admin)):
+    """Strona diagnozy AI dla incydentu. Klikniecie linku na dashboardzie =
+    od razu proba generowania (przy cache pokazuje zapisany wynik natychmiast);
+    przycisk 'Generuj ponownie' wymusza nowe (regenerate=1)."""
+    row = db.query(Incident).filter(Incident.id == incident_id).first()
+    if not row:
+        return HTMLResponse("<h3>Nie ma takiego incydentu.</h3>", status_code=404)
+
+    resp = advise_incident_endpoint(incident_id, regenerate=0, db=db)
+    _ = verify_admin  # dependency juz spelnila rolę przy wejsciu
+
+    error = resp.get("error")
+    result = resp.get("result") or {}
+    cached = resp.get("cached", False)
+
+    hyp_html = ""
+    for h in (result.get("hypotheses") or []):
+        hyp_html += f"""
+        <div class="hyp">
+          <div class="hyp-title">{h.get('title', '?')} <span class="lik lik-{(h.get('likelihood') or 'srednia').lower()}">{h.get('likelihood', '')}</span></div>
+          <div class="hyp-row"><b>Dowód:</b> {h.get('evidence', '-')}</div>
+          <div class="hyp-row"><b>Weryfikacja:</b> {h.get('check', '-')}</div>
+        </div>"""
+
+    cmds = result.get("safe_commands") or []
+    cmds_html = "".join(f"<div class='cmd'>&#36; {c}</div>" for c in cmds)
+    if result.get("safe_commands_filtered_count"):
+        cmds_html += f"<div class='hint'>(Filtr bezpieczeństwa odrzucił {result['safe_commands_filtered_count']} propozycji spoza whitelisty read-only)</div>"
+
+    do_not = result.get("do_not") or []
+    donot_html = "".join(f"<div class='donot'>&#9888; {d}</div>" for d in do_not)
+
+    ts = row.created_at.strftime('%Y-%m-%d %H:%M:%S')
+    color = _SEVERITY_COLOR.get(row.severity, "#555")
+    err_banner = f'<div class="banner err">{error}</div>' if error else ""
+    body_html = f"""
+    {err_banner}
+    <div class="inc">
+      <span class="badge" style="background:{color};">{row.severity}</span>
+      <b>{row.title}</b>
+      <div class="hint">{ts} &middot; {row.category} &middot; {row.source or '-'} &middot; regula: {row.rule_id}</div>
+      <div class="hint">{row.detail}</div>
+    </div>
+    <h2 class="sect">🤖 Diagnoza AI {'(z cache)' if cached else ''}</h2>
+    <div class="adv-box">
+      <p>{result.get('summary', '-')}</p>
+    </div>
+    <h2 class="sect">Hipotezy (od najbardziej prawdopodobnej)</h2>
+    {hyp_html or '<div class="hint">brak hipotez w odpowiedzi modelu</div>'}
+    <h2 class="sect">Bezpieczne komendy do ręcznego wykonania</h2>
+    {cmds_html or '<div class="hint">brak propozycji</div>'}
+    <h2 class="sect">Czego NIE robić</h2>
+    {donot_html or '<div class="hint">brak ostrzeżeń</div>'}
+    <form method="POST" action="/advise/{incident_id}/regenerate" style="margin-top:24px;">
+      <button type="submit">Generuj ponownie (omija cache)</button>
+    </form>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
+<title>USC - Diagnoza AI</title>
+<style>
+{_PAGE_STYLE}
+  .nav a {{ margin-right:16px; }}
+  h2.sect {{ margin:24px 0 8px; font-size:15px; }}
+  .banner {{ padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:14px; max-width:760px; }}
+  .banner.err {{ background:#3a1b1b; color:#e09b9b; }}
+  .inc {{ background:#1a1a1d; border-radius:8px; padding:14px 16px; margin-bottom:8px; max-width:760px; }}
+  .badge {{ color:#fff; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; margin-right:8px; }}
+  .adv-box {{ background:#1a1a1d; border-radius:8px; padding:14px 16px; max-width:760px; }}
+  .hyp {{ background:#1a1a1d; border-radius:8px; padding:12px 14px; margin-bottom:8px; max-width:760px; }}
+  .hyp-title {{ font-weight:600; margin-bottom:6px; }}
+  .hyp-row {{ font-size:13px; color:#bbb; margin-bottom:3px; }}
+  .lik {{ font-size:11px; padding:1px 7px; border-radius:4px; margin-left:8px; }}
+  .lik-wysoka {{ background:#B00020; color:#fff; }}
+  .lik-srednia {{ background:#F9A825; color:#111; }}
+  .lik-niska {{ background:#2a6ef0; color:#fff; }}
+  .cmd {{ font-family:monospace; background:#111; border:1px solid #333; border-radius:4px; padding:6px 10px; margin-bottom:4px; max-width:760px; overflow-x:auto; }}
+  .donot {{ font-size:13px; color:#e0a88a; margin-bottom:4px; max-width:760px; }}
+  .hint {{ color:#666; font-size:12px; margin-top:4px; }}
+  form {{ background:none; padding:0; max-width:none; }}
+</style></head>
+<body>
+  <h1>{_LOGO_H1}</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  {body_html}
+</body></html>"""
+    return html
+
+
+@app.post("/advise/{incident_id}/regenerate")
+def advise_regenerate(incident_id: int, db: Session = Depends(get_db), _=Depends(verify_admin)):
+    advise_incident_endpoint(incident_id, regenerate=1, db=db)
+    return RedirectResponse(url=f"/advise/{incident_id}", status_code=303)
+
+
+@app.get("/report/weekly/view", response_class=HTMLResponse)
+def weekly_report_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    """Raport tygodnia AI - wygenerowany na zyczenie (przycisk), z opcja
+    wyslania kopii na Telegram."""
+    resp = weekly_report_endpoint(send_telegram=0, db=db)
+    result = resp.get("result") or {}
+    error = resp.get("error")
+
+    hl_html = "".join(f"<li>{h}</li>" for h in (result.get("highlights") or []))
+    watch_html = "".join(f"<li>{w}</li>" for w in (result.get("watch") or []))
+    err_banner = f'<div class="banner err">{error}</div>' if error else ""
+    body = f"""
+    {err_banner}
+    <div class="adv-box"><p>{result.get('summary', '-')}</p></div>
+    <h2 class="sect">Najważniejsze zdarzenia</h2>
+    <ul>{hl_html or '<div class="hint">brak</div>'}</ul>
+    <h2 class="sect">Obserwować w przyszłym tygodniu</h2>
+    <ul>{watch_html or '<div class="hint">brak</div>'}</ul>
+    <h2 class="sect">Trendy</h2>
+    <div class="adv-box"><p>{result.get('stats_comment', '-')}</p></div>
+    <form method="POST" action="/report/weekly/send-tg" style="margin-top:24px;">
+      <button type="submit">Wyślij kopię na Telegram</button>
+    </form>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="pl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+{_LOGO_HEAD}
+<title>USC - Raport tygodnia</title>
+<style>
+{_PAGE_STYLE}
+  .nav a {{ margin-right:16px; }}
+  h2.sect {{ margin:24px 0 8px; font-size:15px; }}
+  .banner {{ padding:12px 16px; border-radius:6px; margin-bottom:16px; font-size:14px; max-width:760px; }}
+  .banner.err {{ background:#3a1b1b; color:#e09b9b; }}
+  .adv-box {{ background:#1a1a1d; border-radius:8px; padding:14px 16px; max-width:760px; }}
+  ul {{ color:#bbb; font-size:14px; max-width:760px; }}
+  form {{ background:none; padding:0; max-width:none; }}
+</style></head>
+<body>
+  <h1>{_LOGO_H1}</h1>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
+  {body}
+</body></html>"""
+    return html
+
+
+@app.post("/report/weekly/send-tg")
+def weekly_report_send_tg(db: Session = Depends(get_db), _=Depends(verify_admin)):
+    weekly_report_endpoint(send_telegram=1, db=db)
+    return RedirectResponse(url="/report/weekly/view", status_code=303)
 
 
 @app.get("/incidents")
@@ -499,6 +834,7 @@ _PAGE_STYLE = """
   a { color:#4a9eff; text-decoration:none; }
   .nav { margin-bottom:20px; font-size:13px; }
   .nav a { margin-right:16px; }
+  .ai-link { font-size:12px; margin-left:8px; white-space:nowrap; }
 """
 
 
@@ -605,7 +941,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
           <td style="padding:6px 10px;"><span style="background:{color}; color:#fff; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600;">{r.severity}</span></td>
           <td style="padding:6px 10px; color:#aaa;">{r.category}</td>
           <td style="padding:6px 10px; color:#aaa;">{r.source or '-'}</td>
-          <td style="padding:6px 10px;">{r.title}</td>
+          <td style="padding:6px 10px;">{r.title} <a class="ai-link" href="/advise/{r.id}">🤖 Diagnoza AI</a></td>
           <td style="padding:6px 10px; color:#777; font-size:12px;">{r.status}</td>
         </tr>"""
         cards_html += f"""
@@ -615,7 +951,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
             <span class="card-status">{r.status}</span>
           </div>
           <div class="card-title">{r.title}</div>
-          <div class="card-meta">{r.category} &middot; {r.source or '-'}</div>
+          <div class="card-meta">{r.category} &middot; {r.source or '-'} &middot; <a class="ai-link" href="/advise/{r.id}">🤖 Diagnoza AI</a></div>
           <div class="card-time">{ts}</div>
         </div>"""
     empty_msg = '<tr><td colspan="6" style="padding:20px; text-align:center; color:#666;">Brak incydentów — wszystko OK</td></tr>'
@@ -661,7 +997,7 @@ def dashboard(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
   <div class="sub">Odświeża się co 30s</div>
   <div class="stats">
     <div class="stat"><div class="num" style="color:#B00020;">{crit_count}</div><div class="label">Krytyczne (nowe)</div></div>
@@ -714,11 +1050,12 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
   label:first-of-type {{ margin-top:0; }}
   input {{ width:100%; padding:10px 12px; border-radius:6px; border:1px solid #333; background:#111; color:#eee; font-size:14px; }}
   .hint {{ color:#666; font-size:12px; margin-top:4px; }}
+  h2.sect {{ margin:24px 0 8px; font-size:15px; }}
   button {{ margin-top:20px; padding:10px 20px; border-radius:6px; border:none; background:#2a6ef0; color:#fff; font-size:14px; cursor:pointer; }}
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
   {banner}
   <form method="POST" action="/settings">
     <label>Host unRAID (IP)</label>
@@ -735,6 +1072,18 @@ def settings_page(db: Session = Depends(get_db), _=Depends(verify_admin), saved:
     <label>Chat ID Telegram (odbiorca alertów)</label>
     <input name="telegram_chat_id" value="{s.get('telegram_chat_id') or ''}" placeholder="123456789">
 
+    <h2 class="sect">API Agenta AI (Faza 3 - doradca)</h2>
+    <div class="hint" style="margin:0 0 6px;">Dowolny endpoint kompatybilny z OpenAI (/chat/completions). Puste = doradca wyłączony. Dane incydentów (z redakcją sekretów) wychodzą do tego providera tylko po kliknięciu „Diagnoza AI".</div>
+    <label>Base URL</label>
+    <input name="ai_base_url" value="{s.get('ai_base_url') or ''}" placeholder="https://api.openai.com/v1">
+
+    <label>Klucz API</label>
+    <input name="ai_api_key" type="password" placeholder="{_mask(s.get('ai_api_key')) or 'sk-...'}">
+    <div class="hint">Zostaw puste, żeby nie zmieniać obecnego klucza.</div>
+
+    <label>Model</label>
+    <input name="ai_model" value="{s.get('ai_model') or ''}" placeholder="gpt-4o-mini">
+
     <button type="submit">Zapisz</button>
   </form>
 </body></html>"""
@@ -747,6 +1096,9 @@ def settings_save(
     unraid_api_key: str = Form(""),
     telegram_bot_token: str = Form(""),
     telegram_chat_id: str = Form(""),
+    ai_base_url: str = Form(""),
+    ai_api_key: str = Form(""),
+    ai_model: str = Form(""),
     db: Session = Depends(get_db), _=Depends(verify_admin),
 ):
     set_setting(db, "unraid_host", unraid_host.strip())
@@ -755,6 +1107,10 @@ def settings_save(
     if telegram_bot_token.strip():
         set_setting(db, "telegram_bot_token", telegram_bot_token.strip())
     set_setting(db, "telegram_chat_id", telegram_chat_id.strip())
+    set_setting(db, "ai_base_url", ai_base_url.strip())
+    if ai_api_key.strip():
+        set_setting(db, "ai_api_key", ai_api_key.strip())
+    set_setting(db, "ai_model", ai_model.strip())
     return RedirectResponse(url="/settings?saved=1", status_code=303)
 
 
@@ -815,7 +1171,7 @@ def wizard_page(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
   {body}
 </body></html>"""
     return html
@@ -872,7 +1228,7 @@ def wizard_connect(
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
   {banner}
   {steps_html}
   <p style="margin-top:20px;"><a href="/settings">← Wróć do ustawień</a></p>
@@ -912,7 +1268,7 @@ def wizard_disconnect(db: Session = Depends(get_db), _=Depends(verify_admin)):
 </style></head>
 <body>
   <h1>{_LOGO_H1}</h1>
-  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a></div>
+  <div class="nav"><a href="/">Dashboard</a><a href="/settings">Ustawienia</a><a href="/wizard">Połącz z unRAID</a><a href="/report/weekly/view">Raport tygodnia</a></div>
   <div class="banner ok">Rozłączono od {host or 'unRAID'}. Posprzątano wpisy w authorized_keys, klucz API i lokalne pliki kluczy.</div>
   {steps_html}
   <p style="margin-top:20px;"><a href="/wizard">← Wróć do parowania</a></p>

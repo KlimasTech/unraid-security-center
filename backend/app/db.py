@@ -174,6 +174,24 @@ class MemoryUsageHistory(Base):
     used_pct = Column(Integer, nullable=True)
 
 
+class Advisory(Base):
+    """Diagnoza AI-doradcy (Faza 3) powiazana z incydentem.
+
+    Cache: po jednym kliknieciu 'Diagnoza AI' koszt nie jest ponawiany
+    dla tego samego incydentu (odswiezenie wymaga jawnego 'regenerate').
+    Raport tygodniowy: incident_id = NULL, kind = 'weekly_report'.
+    Doradca NIGDY nic nie wykonuje - to tylko wygenerowany tekst."""
+
+    __tablename__ = "advisories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    incident_id = Column(Integer, nullable=True, index=True)
+    kind = Column(String(32), default="incident")  # incident | weekly_report
+    result_json = Column(Text)  # pelna odpowiedz doradcy (JSON jako tekst)
+    error = Column(Text, nullable=True)  # niepowodzenie (konfiguracja/provider)
+
+
 class Setting(Base):
     """Ustawienia konfigurowalne z panelu (nie z .env) - np. host unRAID,
     klucz API, token/chat Telegram. Prostzy key-value store."""
@@ -190,7 +208,19 @@ SETTING_KEYS = [
     "unraid_api_key",
     "telegram_bot_token",
     "telegram_chat_id",
+    "ai_base_url",
+    "ai_api_key",
+    "ai_model",
 ]
+
+
+def get_ai_settings(db) -> dict[str, str | None]:
+    """Ustawienia 'API Agenta AI' (Faza 3) - osobno od glownych, bo uzywane
+    tylko przez modul ai_advisor i ustawiane w panelu w dedykowanej sekcji."""
+    keys = ["ai_base_url", "ai_api_key", "ai_model"]
+    rows = db.query(Setting).filter(Setting.key.in_(keys)).all()
+    values = {r.key: r.value for r in rows}
+    return {k: values.get(k) for k in keys}
 
 
 def get_setting(db, key: str, default: str | None = None) -> str | None:

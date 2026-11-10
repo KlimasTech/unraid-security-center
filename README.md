@@ -90,10 +90,14 @@ restartu kontenerów — kolektor odpytuje backend o nie co ~60s
 ## Roadmapa
 
 Faza 1 (fundament: GraphQL, SMART, Docker, VM, syslog, Telegram) — ✅ zrobione.
-Faza 2 (korelacja wielomodułowa, trendy) — ✅ pierwsza część: korelacja
-SMART 199 + resety SATA, korelacja OOM + RAM hosta, trendy SMART (sparkline)
-na dashboardzie, monitoring RAM. Faza 3 (AI-doradca bez uprawnień
-wykonawczych) — planowane, patrz `ARCHITECTURE.md`.
+Faza 2 (korelacja wielomodułowa, trendy) — ✅ zrobione: korelacja SMART 199 +
+resety SATA, OOM + RAM hosta, VM paused + błędy qemu; trendy SMART/RAM
+(sparkline) na dashboardzie; monitoring RAM.
+Faza 3 (AI-doradca) — ✅ infrastruktura gotowa: „API Agenta AI" w /settings
+(dowolny endpoint OpenAI-compatible), przycisk „Diagnoza AI" przy każdym
+incydencie (hipotezy z dowodami, whitelistowane komendy read-only, ostrzeżenia
+„czego nie robić"), „Raport tygodnia" z opcją wysyłki na Telegram. Doradca
+NIGDY nic nie wykonuje — zero uprawnień wykonawczych, wyłącznie analiza.
 
 ## Licencja
 
