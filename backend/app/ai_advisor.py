@@ -126,9 +126,14 @@ Regula: opieraj sie TYLKO na dostarczonych danych, nie zmyslaj."""
 
 
 def _require_settings(ai_settings: dict) -> tuple[str, str, str]:
-    base_url = (ai_settings.get("base_url") or "").strip()
-    api_key = (ai_settings.get("api_key") or "").strip()
-    model = (ai_settings.get("model") or "").strip() or "gpt-4o-mini"
+    # Akceptujemy OBA styl kluczy: baza zwraca ai_base_url/ai_api_key/ai_model
+    # (get_ai_settings z app.db), a dokumentacja modulu mowila base_url/
+    # api_key/model - literowki kluczy nie moga wylaczac doradcy.
+    base_url = (ai_settings.get("ai_base_url") or ai_settings.get("base_url") or "").strip()
+    api_key = (ai_settings.get("ai_api_key") or ai_settings.get("api_key") or "").strip()
+    model = (
+        ai_settings.get("ai_model") or ai_settings.get("model") or ""
+    ).strip() or "gpt-4o-mini"
     if not base_url or not api_key:
         raise AIAdvisorError(
             "Doradca AI nie jest skonfigurowany - uzupelnij 'API Agenta AI' w Ustawieniach."
@@ -140,8 +145,17 @@ def _chat_completion(
     base_url: str, api_key: str, model: str, system_prompt: str,
     user_content: str, timeout: int = 60,
 ) -> dict:
-    """Wywoluje OpenAI-compatible /chat/completions i zwraca sparsowany JSON."""
-    url = base_url.rstrip("/") + "/chat/completions"
+    """Wywoluje OpenAI-compatible /chat/completions i zwraca sparsowany JSON.
+
+    Normalizacja base URL: operator moze wkleic zarowno bazowe
+    'https://.../v1', jak i pelny endpoint 'https://.../v1/chat/completions'
+    (czesty przypadek - OpenRouter podaje w dokumentacji pelny URL).
+    Koncowka '/chat/completions' jest zdejmowana i doklejana RAZ.
+    """
+    url = base_url.rstrip("/")
+    if url.endswith("/chat/completions"):
+        url = url[: -len("/chat/completions")]
+    url += "/chat/completions"
     body = json.dumps({
         "model": model,
         "messages": [

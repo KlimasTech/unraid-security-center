@@ -515,11 +515,12 @@ def advise_incident_endpoint(
             .order_by(desc(Advisory.created_at))
             .first()
         )
+        # Cache(unia) tylko SUKCESOW: zapisany blad nie blokuje kolejnej
+        # proby - operator mogl w miedzyczasie poprawic konfiguracje
+        # doradcy (jakie to typowe: pierwszy klik bez klucza API).
         if cached and cached.result_json:
             return {"incident_id": incident_id, "cached": True,
                     "result": json.loads(cached.result_json)}
-        if cached and cached.error:
-            return {"incident_id": incident_id, "cached": True, "error": cached.error}
 
     incident = {
         "severity": row.severity, "category": row.category, "source": row.source,
